@@ -29,7 +29,7 @@ Podman's secret drivers, verified against the maintainer's own documentation:
 
 | Driver | Behavior | Source |
 |---|---|---|
-| `file` (default) | Secret resides in a read-protected **plaintext** file. Not encrypted at rest. MUST NOT be claimed as at-rest protection under the SUP's Change 5. | `containers/podman` `docs/source/markdown/podman-secret-create.1.md` @ `main` |
+| `file` (default) | Secret resides in a read-protected **plaintext** file. Not encrypted at rest. must not be claimed as at-rest protection under the SUP's Change 5. | `containers/podman` `docs/source/markdown/podman-secret-create.1.md` @ `main` |
 | `shell` | Managed by custom scripts; `SECRET_ID` is passed via environment, secret content via stdin/stdout. This is the integration point a device can use to bridge to an OS-level sealing mechanism (e.g. a script backed by `systemd-creds`/tpm2-tools) — the SUP's Change 5 explicitly permits this. | Same source |
 | `pass` | GPG-encrypted file. | Same source |
 

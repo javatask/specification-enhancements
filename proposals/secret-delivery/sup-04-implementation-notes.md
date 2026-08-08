@@ -110,6 +110,20 @@ No primary-source citation for rust-keylime's package size was found in the time
 
 ---
 
+## 10. Privilege-drop primitives — non-systemd platforms
+
+Change 5's privileged-decryption requirement is outcome-based and is not specific to systemd (§1 above documents the systemd primitive). Reference primitives for the other platforms Rev 4's ballot text names:
+
+| Platform | Primitive | Verification | Source | Perishability |
+|---|---|---|---|---|
+| s6 | `s6-setuidgid` (drop privileges before exec'ing the long-lived process) / `s6-envuidgid` (process starts privileged, drops afterward) | VERIFIED, exact quote | skarnet.org, s6 service-directory documentation | LOW — s6's supervision model has been stable for years |
+| runit | `chpst -u <user>` — sets uid/gid, then runs the target program; chained at the end of a service's `run` script ahead of the long-lived process | VERIFIED (tool + `-u` option confirmed against the primary man page; the "privileged setup, then chpst, then exec" composition is runit's standard idiom, not separately re-derived against a worked example this session) | smarden.org, `chpst(8)` | LOW |
+| OpenRC | `start-stop-daemon --chuid <user>[:<group>]`, invoked from an `openrc-run` service script that may perform privileged setup earlier in the same script | VERIFIED | Debian `start-stop-daemon(8)`; cross-confirmed against `OpenRC/openrc`'s own `sh/start-stop-daemon.sh` and `service-script-guide.md` | LOW |
+
+Verified 2026-08-08. None of these carries a version-floor trap comparable to systemd's `systemd-creds` v250/v258 boundary — all three are long-stable, general-purpose privilege-drop primitives, not a recently introduced feature; there is no "before version X this doesn't exist" caveat to document for any of them.
+
+---
+
 ## Cross-reference discipline
 
 Each affected Change in `sup-04-secret-delivery.md` carries a one-line pointer of the form:

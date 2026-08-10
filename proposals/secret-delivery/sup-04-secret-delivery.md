@@ -1,41 +1,42 @@
 # Secret Delivery: Reference-Based Distribution and Device-Side Sealing
 
+**Revision 9 — 2026-08-10**
+
 ## Owner
 
 [@javatask](https://github.com/javatask) — Andrii Melashchenko, Belden Inc.
 
 ## Summary
 
-This SUP defines how a Margo deployment delivers secret-classified parameter values — API keys, tenant credentials, and similar — to a device without plaintext ever appearing in a manifest, an archive, or a status report. It introduces a `Parameter` extension (`kind: secret` / `secretRef`, Change 2) that lets an `ApplicationDescription` reference a secret by name instead of carrying its value; a **Margo Secrets Service (MSS) role** (Change 1) and a **Secret Retrieval contract** (Change 3) that a device uses to fetch the value it is authorized to hold, authenticated under the MIAF identity model (Change 4); and a set of device-side obligations — sealing at rest, privileged decryption, residue-zero destruction on removal, and an honest, threat-keyed `secretsAtRest` declaration (Changes 5, 5b, 6) — that bound what a device may claim about how it protects what it fetches.
-
-Margo standardizes on contracts, not products. The MSS is a role any conforming service can fill; the Secret Retrieval contract specifies a primary, Margo-native wire format and a named, optional compatibility profile for backends that speak the HashiCorp Vault / OpenBao KV v2 shape natively. OS- and product-specific mechanism detail — which credential-sealing tool, which container-runtime driver, which version floor — is deliberately kept out of this ballot text and lives instead in a non-normative companion document, `sup-04-implementation-notes.md`, so that conformance is judged against the MUSTs stated here, not against any one implementation.
+This SUP defines how Margo delivers secret parameter values to devices without plaintext appearing in manifests, status reports, or logs. It introduces a `Parameter.secretRef` extension for referencing secrets by name, a Margo Secrets Service (MSS) role with a single retrieval contract, mTLS authentication scoped by the device's X.509-SVID identity, and device-side obligations for sealing, injection, and residue-zero destruction.
 
 ## Reason for proposal
 
-Margo's `ApplicationDescription` defines a `Parameter` mechanism for passing configuration into a deployed application, but every `Parameter` today carries a literal `value`. There is no way to reference a secret — a cloud tenant key, a database credential, an OCI registry token — without writing it in plaintext into a manifest, an `ApplicationDeployment` YAML, a bundle, `margo-params.env`, a status report, or a log. This is a real interoperability and security gap: two implementations of "the same" secret-handling pattern can diverge in every dimension that matters — where the value lives at rest, who can retrieve it, and what happens when a device is decommissioned — while both claim conformance to a specification that says nothing about any of it.
+**Design philosophy.** Margo standardizes contracts, not products. The MSS is a role any conforming service can fill. This SUP specifies the minimum surface a voting member can evaluate in twenty minutes: what a device fetches, how it proves identity, and what it guarantees about the value once held. Mechanism lives in the non-normative companion (`sup-04-implementation-notes.md`); rationale lives in `sup-04-rationale-and-alternatives.md`.
 
-Four specific gaps exist:
+Four gaps in the current specification motivate this proposal:
 
-1. **No reference mechanism.** `Parameter.value` is the only way to supply configuration; there is no way to say "the value for this parameter lives elsewhere, fetch it."
-2. **No retrieval contract.** Even with a reference, nothing in the specification defines how a device authenticates to a secrets store, what it may retrieve, or what the response looks like.
-3. **No device-side obligation.** Nothing requires a device to protect a secret once retrieved — at rest, during decryption, or on workload removal — and nothing lets a device honestly declare what protection it actually provides.
-4. **No authorization contract.** Without a stated least-privilege rule, a device could in principle retrieve any secret a compromised or misconfigured backend is willing to serve it.
-
-Without resolving these gaps, a Margo deployment cannot express the single most common configuration pattern in industrial and cloud-native software — a workload that needs a credential — without falling back to plaintext-in-manifest, which this SUP exists to make unnecessary.
-
-This SUP does not ask Margo devices to adopt an unproven pattern. A production-grade open-source implementation of the reference/fetch/inject/seal pattern this SUP formalizes already exists and backs the named compatibility profile in Change 3 (see the Reference Implementation Statement) — the role and retrieval contract defined here are proven implementable, not speculative.
+1. **No reference mechanism.** `Parameter.value` is the only supply path; there is no indirection to an external store.
+2. **No retrieval contract.** No defined wire format, authentication, or error handling for fetching a referenced secret.
+3. **No device-side obligation.** No requirement to seal, inject securely, or destroy secret material.
+4. **No authorization contract.** No stated least-privilege rule bounding what a device may retrieve.
 
 ## Requirements alignment acknowledgement
 
-This SUP addresses the following open specification issues:
+This SUP addresses:
 
-- **[margo/specification #145](https://github.com/margo/specification/issues/145)** (OPEN as of 2026-08-07 — re-verify before vote) — "Define the strategy to enable sensitive information to be utilized within the application management mechanism." This is the anchor issue for this SUP. Its acceptance criteria are, verbatim: *"Define how application developers can indicate which parameters are supposed to be protected"* and *"Define how this information is protected during app configuration, transit via the deployment specification, and storage within the device."* This SUP answers the first criterion via Change 2 (`kind: secret` / `secretRef`); the second via Changes 3 and 4 (configuration and transit) and Changes 5, 5b, and 6 (storage on the device). Issue #145's use-case text also requires that "only the device that values are intended for should be able to access/use the values" — Change 4's least-privilege-by-manifest authorization answers this directly.
-- **[margo/specification #129](https://github.com/margo/specification/issues/129)** (OPEN as of 2026-08-07) — "Define how the WFM manages OCI credentials within the Margo device." Issue #145 names this as its linked backlog feature. This SUP answers #129's requirement to "define how the edge device is required to store these credentials" (Change 5b together with Change 5). This SUP does **not** answer #129's other criteria — which authorization mechanisms apply per artifact type, and how the WFM itself receives and manages tenant credentials from an operator — and makes no claim to.
-- **[margo/specification #15](https://github.com/margo/specification/issues/15)** (OPEN as of 2026-08-07) — "Security - Access to Private Registries." Related: the OCI registry credential is expected to be one instance of a runtime-scoped secret under Change 5b, developed as WG-PROPOSAL-05, built on this SUP.
+- **[margo/specification #145](https://github.com/margo/specification/issues/145)** — sensitive-information strategy for application management.
+- **[margo/specification #129](https://github.com/margo/specification/issues/129)** — OCI credential management on devices (partial; see out-of-scope).
 
-**Out of scope:** SVID acquisition and provisioning for the device (the subject of `specification-enhancements` PR #84, "MIAF Credential Provisioning and Acquisition," stage P1 as of this revision — not yet Approved); the WFM-side tenant-credential intake half of issue #129; the appraisal or Verifier mechanism for attestation evidence referenced informatively under Change 6; OS- or product-level implementation mechanism, which is documented in the non-normative companion `sup-04-implementation-notes.md` rather than specified here; and **MSS discovery** — how a device learns the MSS's network address (hostname/IP, port) and applicable Trust Domain before it can make its first Secret Retrieval request. Change 4 defines how a device *validates* the MSS's identity once a connection is attempted (the MSS's SPIFFE ID and X.509-SVID, checked against the Trust Bundle); it does not define how the device *locates* the MSS to connect to in the first place — a distinct problem, since a device holding a complete, current Trust Bundle can still have no way to learn the MSS's address. Unlike SVID acquisition, no successor proposal currently tracks this gap by issue or PR number. Until one exists, operators MUST document the MSS's address and Trust Domain out of band (e.g., in the `ApplicationDeployment` manifest, a WFM system-configuration document, or device provisioning material). **A conformant device MUST expose some means — a configuration file, a provisioning-time parameter, an environment value, or an equivalent device-specific mechanism — by which that documented address and Trust Domain reach the device before its first Secret Retrieval attempt; this SUP does not specify which.** This channel's `Trust Domain` value is informational only and carries no security weight: Change 4's MSS-recognition discipline sources the `<trust-domain>` it validates against exclusively from the device's own already-provisioned X.509-SVID — "never inferred from Trust Bundle contents or any other source," which includes this channel — so a tampered or wrong value here cannot change which Trust Domain a device actually trusts; at most it misdirects a connection attempt, which the recognition check independently and cryptographically rejects.
+**Out of scope (with named successors):**
 
-**Dependency:** Transport security and client authentication rest on the MIAF mTLS/X.509-SVID channel (SPIFFE Trust Domain, X.509-SVID issuance, Trust Bundle-based validation) — the sole normative authentication binding this SUP defines for the Secret Retrieval contract. MIAF and its sibling WFM Identity Profile are Approved (stage P3, Decision Gate 2) in `margo/specification-enhancements` via PR #38 and PR #58, confirmed as of 2026-08-07, but are not yet integrated as normative text in `margo/specification`; that integration is tracked in `margo/specification` PR #194, **open as of this revision — re-verify its status before this SUP is put to a vote.** Until PR #194 merges, only the RFC 9421 compatibility profile defined under Change 4 is exercisable against `margo/specification` HEAD. This SUP presumes the device, acting as a WFM-Client-class principal under MIAF, already holds a valid X.509-SVID; how that SVID is acquired is out of scope here (see above). This SUP MUST NOT describe MIAF, or any SUP, as "ratified" — Margo's documented process defines no such state; the correct terms are **Approved** (P3, `specification-enhancements`) and **integrated** (merged into `margo/specification`).
+- WFM→MSS secret write path — the WFM MUST write secret values to the MSS before publishing Desired State referencing them; the write-path API is deferred to a future SUP.
+- Dynamic credential issuance (short-lived tokens, just-in-time certificates) — deferred to a named successor SUP.
+- OCI registry credential delivery mechanism — deferred to SUP-05 (builds on Change 5b of this SUP).
+- SVID acquisition and provisioning (`specification-enhancements` PR #84, stage P1).
+- MSS discovery (how a device learns the MSS network address).
+
+**Dependency:** mTLS authentication rests on the MIAF identity model (PR #38, Approved P3; spec integration tracked by `margo/specification` PR #194, open as of this revision — re-verify before vote).
 
 ## Technical proposal
 
@@ -43,43 +44,20 @@ This SUP addresses the following open specification issues:
 
 | File | Change type |
 |---|---|
-| `system-design/specification/margo-secrets-service/` (new) | New — defines the Margo Secrets Service (MSS) role and the Secret Retrieval contract (primary Margo-native envelope + KV-v2 compatibility profile) |
-| `src/specification/applications/application-description.linkml.yaml` | Schema update — adds `Parameter.kind` (optional discriminator), `Parameter.secretRef`, and `ParameterTarget.dataKey` (optional string) |
-| `system-design/specification/margo-management-interface/device-capabilities.md` | Normative update — adds `secretsAtRest`, informative `sealingMechanism` and `attestationMechanism` fields |
-| `system-design/specification/margo-management-interface/api-requirements-and-security.md` | Referenced, not modified — this SUP's RFC 9421 compatibility profile reuses the replay-defense profile already normative there |
-| `sup-04-implementation-notes.md` (new, non-normative) | New companion document — OS/product-specific reference mechanisms, version floors, and known implementation traps |
-
-### Reference Implementation Statement (informative)
-
-Margo standardizes on contracts, not products. The table below names a reference implementation for the KV-v2 compatibility profile and the device-side mechanism categories this SUP requires; any implementation meeting the normative requirements in the Changes below conforms, whether or not it uses the reference named here.
-
-| Layer | Reference implementation | License | Notes |
-|---|---|---|---|
-| Server (MSS role) — compatibility profile | OpenBao Server | MPL 2.0, LF/OpenSSF | KV v2 engine + TLS certificate auth method. Backs the **KV-v2 compatibility profile** (Change 3) only. As of 2026-08-07, no reference implementation of the **primary** Margo-native envelope is named — any HTTP service implementing the schema in Change 3's primary profile conforms. |
-| Device fetch | OpenBao Agent (auto-auth, local proxy, response cache) | MPL 2.0 | Static KV secrets are NOT persisted by the agent cache by default — the sealed credential file (Change 5) is the durable offline artifact, not the agent cache. |
-| Device sealing | An OS-native credential-sealing mechanism bound to the device's declared `secretsAtRest` tier (Change 6) | — | See the non-normative Implementation Notes companion to this SUP (`sup-04-implementation-notes.md`) for a reference mechanism, including a version-floor pitfall worth knowing before deployment. |
-| Device injection | Decrypted plaintext delivered into a volatile, container-scoped location for the lifetime of the consuming workload (Change 5) | — | See the Implementation Notes companion for reference mechanisms across unit-file-based and Compose-based deployment models. |
-| Optional attestation-gated profile | An attestation-gated secret-release mechanism (see Change 6 and Security considerations) | Apache 2.0 (rust-keylime, CNCF Sandbox) | Secrets released only after platform attestation passes — optional enhancement, not baseline. |
-
-- A conformant MSS's authentication backend, where it is path-policy-based, typically maps the SPIFFE ID URI SAN presented in the client's X.509-SVID to a policy identity; see the Implementation Notes companion for the reference server's specific configuration surface.
-- Such a backend typically requires one role or policy per current Trust Bundle anchor during a trust-anchor rotation overlap, rather than a single role reused across anchors.
-
-Rejected as normative basis: HashiCorp Vault (BUSL 1.1 — incompatible with LF-standard embedding), Sealed Secrets (embeds ciphertext in manifests — violates reference-only rule), ESO/CSI Secrets Store (Kubernetes-control-plane-tethered), hawkBit DDI (no KV reference mapping or TPM sealing), AGPL-licensed managers (Infisical CE, Bitwarden Unified — copyleft risk for device vendors). flightctl's `platform/secret` provider (Apache 2.0) is architecturally aligned and noted as a second viable server-side basis, but its coupling to the flightctl fleet model makes it a design reference rather than the drop-in.
-
-> Licensing gate: MPL 2.0 is file-level weak copyleft; embedding the unmodified OpenBao Agent requires no source disclosure of the integrator's own code, but formal clearance follows the standard open-source review path (route to IP Counsel before any product commitment).
+| `system-design/specification/margo-secrets-service/` (new) | MSS role + Secret Retrieval contract |
+| `src/specification/applications/application-description.linkml.yaml` | Adds `Parameter.kind`, `Parameter.secretRef`, `ParameterTarget.dataKey` |
+| `system-design/specification/margo-management-interface/device-capabilities.md` | Adds `secretsAtRest` field |
 
 ### Change 1: The Margo Secrets Service (MSS) role
 
-The MSS is a **role, not a specific service** (same construction as the MIS role in MIAF PR2). Within a deployment, the MSS is responsible for:
+The MSS is a **role**, not a product. It is responsible for:
 
-- storing secret values addressed by opaque references;
-- serving the Secret Retrieval contract (Change 3) over the authenticated binding;
-- enforcing least-privilege authorization (Change 4); and
-- versioning secrets so devices can poll for rotation cheaply.
+- storing secret values addressed by opaque `secretRef` references;
+- serving the Secret Retrieval contract (Change 3) over mTLS;
+- enforcing identity-derived authorization (Change 4); and
+- versioning secrets so devices detect rotation.
 
-The MSS's own identity — how a device recognizes it is talking to a genuine MSS and not an impersonator — is specified under Change 4 (Authentication and authorization).
-
-Anything meeting these responsibilities fills the role — a dedicated secrets-management server, a WFM-embedded secrets store, or a broker in front of an existing enterprise vault. See the Reference Implementation Statement for the named reference server. The MSS MAY be operated by the WFM vendor, the end customer, or a third party; the trust consequence (the MSS holds plaintext) MUST be documented by the operator.
+Any service meeting these responsibilities fills the role. The MSS MAY be operated by the WFM vendor, the end customer, or a third party; the trust consequence (the MSS holds plaintext) MUST be documented by the operator.
 
 ### Change 2: `Parameter` extension — `secretRef`
 
@@ -90,278 +68,245 @@ parameters:
     secretRef: factory-a/eh-tenant-key
     targets:
       - pointer: CLOUD_TENANT_KEY
+        dataKey: apikey
         components: ["cloud-gateway"]
 ```
 
-- `kind: secret` MUST carry `secretRef`, MUST NOT carry a literal `value`.
-- Secret values MUST NOT appear in manifests, ApplicationDeployment YAMLs, bundles, `margo-params.env`, status reports, or logs.
-- **Compatibility (MUST):** A `Parameter` instance with no `kind` slot present MUST be interpreted as `kind: value` (today's existing literal-value behavior, unchanged). `kind` is introduced by this SUP as an optional discriminator; no `Parameter` document conformant to the schema integrated in `margo/specification` prior to this SUP is invalidated by its introduction.
-- **Format:** `secretRef` MUST match `^[a-z0-9]([a-z0-9._-]*[a-z0-9])?(/[a-z0-9]([a-z0-9._-]*[a-z0-9])?)*$` (lowercase path-like segments, no leading/trailing separators, no `..` traversal). This bounds the reference namespace and avoids path-traversal or collision ambiguity in MSS backends that map `secretRef` onto filesystem-like key paths.
-- **Path encoding (MUST):** each `/`-delimited segment of `secretRef` MUST be transmitted as a literal, unencoded path segment in the retrieval request URL. A `secretRef` of `factory-a/eh-tenant-key` MUST be requested as `GET /api/v1/secrets/factory-a/eh-tenant-key`, never as `GET /api/v1/secrets/factory-a%2Feh-tenant-key`. This rule is identical under the primary profile and the KV-v2 compatibility profile; the two profiles differ in response-body shape and error-body convention, never in how `secretRef` is placed on the wire. An MSS implementation that requires percent-encoded slashes to route a multi-segment `secretRef` correctly does not conform to this Change.
-- **No composition with other value-resolution mechanisms (MUST NOT).** A `Parameter` with `kind: secret` MUST NOT carry a literal `value` (see above) and MUST NOT carry any generic value-resolution field defined by another proposal (for example `valueFrom`, per `specification-enhancements` PR #54 or a successor) as an alternative or fallback source for its value. `secretRef` is this SUP's sole value-resolution mechanism for `kind: secret` Parameters.
-- **Fail-closed on resolution failure (MUST).** A device or WFM that fails to resolve a `secretRef` — including but not limited to an unreachable MSS, an authorization denial, or an unknown reference — MUST fail the corresponding install or update operation. It MUST NOT substitute any other value source, literal or resolved, sealed or unsealed, as a fallback. This SUP does not adopt, for `kind: secret` Parameters, the fallback-on-resolution-failure semantics that any general value-resolution mechanism may define for non-secret parameters.
-- **Target-to-data-key binding (MUST).** Each entry in a `kind: secret` Parameter's `targets` list MAY carry a `dataKey` field, naming the key within the Secret Retrieval contract's resolved `data` object (or `data.data` under the KV-v2 profile, Change 3) whose value is written to that target's `pointer`. Where the resolved `data` object contains exactly one key, `dataKey` MAY be omitted, and that sole key MUST be used. Where `data` contains more than one key, every target consuming that `secretRef` MUST carry an explicit `dataKey`; a device or WFM encountering a multi-key `data` object with any target lacking `dataKey` MUST treat this as a resolution failure under the fail-closed rule above — it MUST NOT guess a key, concatenate keys, or serialize the whole object into the target.
-- **Deployment-profile prerequisite for `pointer` (MUST).** `ParameterTarget.pointer` semantics are defined by each deployment profile's own specification, not by this SUP. As of this revision, two profiles define them: `helm` (dot-notation into `values.yaml`) and `compose` (the environment-variable name). A deployment profile whose own specification does not yet define `pointer` semantics — as of this revision, any unit-based / Quadlet-style profile (margo/specification-enhancements PR #69, proposing a quadlet.v1 profile type, OPEN as of 2026-08-09 — not yet Approved; re-verify before vote) — MUST NOT be the target of a `kind: secret` Parameter's `targets[]` entry. A device or WFM encountering such a target MUST treat it as a resolution failure under the fail-closed rule above; it MUST NOT guess a delivery location, invent a filesystem convention, or otherwise supply `pointer` semantics this SUP does not define. This restriction lifts automatically, without a revision to this SUP, once the target profile's own specification defines `pointer` for it.
-- **Converse binding (MUST).** A `Parameter` instance that carries a `secretRef` field MUST also carry `kind: secret`. A device or WFM encountering a `Parameter` with `secretRef` present and `kind` absent, or `kind` present with a value other than `secret`, MUST treat this as a malformed `Parameter` and fail the corresponding install or update operation under the fail-closed rule above — it MUST NOT silently interpret the instance as `kind: value` and discard `secretRef`.
+Requirements:
 
-**Worked example — multi-key secret fan-out (informative).** A single `secretRef` resolving to a multi-key `data` object (Change 3) can fan out into multiple targets, one `dataKey` per target:
-
-```yaml
-parameters:
-  - name: db-credentials
-    kind: secret
-    secretRef: factory-a/db-tenant
-    targets:
-      - pointer: DB_USER
-        dataKey: username
-        components: ["cloud-gateway"]
-      - pointer: DB_PASS
-        dataKey: password
-        components: ["cloud-gateway"]
-```
-
-**`Parameter` extension coexistence (informative).** This SUP's `kind`/`secretRef` fields are additive to the `Parameter` schema integrated in `margo/specification` today. A separate, independent proposal (`specification-enhancements` PR #54, stage P2 as of this revision) proposes an unrelated `valueFrom` field on the same class, for device-supplied parameter value resolution. The two proposals do not conflict at the schema level; the two MUST-level rules above foreclose the one interaction that would otherwise be ambiguous once both land.
+- `kind: secret` **MUST** carry `secretRef`, **MUST NOT** carry a literal `value`.
+- A `Parameter` with no `kind` slot present **MUST** be interpreted as `kind: value` (backward-compatible default).
+- A `Parameter` carrying `secretRef` without `kind: secret` **MUST** be treated as malformed; fail-closed.
+- `secretRef` grammar: `^(SEG|VAR)(/(SEG|VAR))*$` where `SEG = [a-z0-9]([a-z0-9._-]*[a-z0-9])?` and `VAR = \{\{[a-z]+(\.[a-z]+)*\}\}` (see Change 7 for template variables).
+- Each `/`-delimited segment **MUST** be transmitted as a literal path segment in the retrieval URL (no percent-encoding of `/`).
+- `kind: secret` **MUST NOT** carry any alternative value-resolution field (e.g. `valueFrom`).
+- Resolution failure (unreachable MSS, 403, 404, unknown ref) **MUST** fail the install/update operation. No fallback substitution.
+- `ParameterTarget.dataKey` names the key within the response `data` object to extract. Where `data` contains exactly one key, `dataKey` MAY be omitted. Where `data` contains multiple keys, every target **MUST** carry `dataKey`; absence is a resolution failure.
+- `pointer` semantics are defined per deployment profile. A `kind: secret` target **MUST NOT** reference a profile that has not yet defined `pointer` semantics.
+- Secret values **MUST NOT** appear in manifests, deployment YAMLs, bundles, `margo-params.env`, status reports, or logs.
 
 ### Change 3: Secret Retrieval contract
 
-The Secret Retrieval contract has one primary conformance target — a thin, Margo-native JSON envelope — and one named, optional compatibility profile for MSS backends that speak the HashiCorp Vault / OpenBao KV v2 wire shape natively. A conformance claim MUST state which profile a deployment uses; a device MUST NOT be required to speak both to a single MSS. Profile selection is a deployment-time configuration choice, documented by the operator alongside the MSS's address and Trust Domain configuration (see the Requirements alignment acknowledgement's MSS-discovery out-of-scope note) — not an in-band, per-request negotiation; this SUP does not define an `Accept`-header or capability-flag negotiation mechanism for it.
+Margo defines a single retrieval contract. The wire shape is Margo's own schema, compatible with the KV-v2 layout.
 
-#### Primary profile: Margo-native envelope
-
-```https
-GET /api/v1/secrets/{secretRef}
 ```
-
-| Aspect | Requirement |
-|---|---|
-| Response body | JSON object with the following top-level fields: `secretRef` (string, REQUIRED — echoes the requested reference, so a device can detect MSS-side routing errors), `version` (integer, REQUIRED, monotonic — the change token), `data` (object, REQUIRED — the secret key-value map). `data` MAY contain more than one key-value pair; this SUP places no cardinality constraint on it. Where `data` contains more than one key, extraction of an individual value into a `Parameter`'s `targets[].pointer` is governed by Change 2's `ParameterTarget.dataKey` field. An `updatedAt` field (RFC 3339 timestamp, OPTIONAL, informative only) MAY be present; it MUST NOT be used as a rotation signal — `version` is the sole authoritative change token, to avoid clock-skew ambiguity. Unrecognized top-level fields MAY be present and MUST be ignored. |
-| Rotation polling | The device treats `version` as the change token. Implementations SHOULD support conditional fetch: the MSS returns `ETag: "<version>"` — the `version` integer rendered as a quoted string per RFC 9110 §8.8.3 (e.g. `ETag: "42"`; never a bare integer, and never a hash of the payload) — on every response. A device SHOULD echo it verbatim via `If-None-Match` on its next poll and treat `304 Not Modified` as no-change. Because the ETag is derived directly from the authoritative `version` change token rather than a payload hash, it MUST be a strong validator (RFC 9110 §8.8.2.2) — an MSS MUST NOT prefix it with the weak-validator marker `W/`. Where the MSS does not support conditional fetch, the device compares `version` after fetch. **Rotation is device-detected via this signal** — a device does not re-seal spontaneously, and the re-seal/re-inject obligation in Change 5 is triggered by observing a version change here. Absent an operator-configured interval, a device SHOULD poll for rotation no more frequently than once per five minutes (consistent with the five-minute reference validity window this SUP already uses for the RFC 9421 compatibility profile's replay-defense clock-skew tolerance, Change 4) — this is a starting-point default, not a claim that five minutes is independently derived for this purpose. An MSS MAY return `429 Too Many Requests` with a `Retry-After` header (RFC 6585 §4) to signal a tighter bound; a device MUST honor a `Retry-After` value received from the MSS by suspending polling for at least the stated duration. Devices SHOULD apply randomized jitter (e.g. ±20%) around their polling interval to avoid fleet-wide synchronized polling after a shared event such as a mass reboot or a mass rotation. Where a `secretRef`'s `data` carries more than one key, a `version` change is a per-document signal, not a per-key one: every device consuming any key of that `data` object via `dataKey` observes the same `version` bump and re-seals/re-injects per Change 5, regardless of which specific key changed. Implementers grouping unrelated credentials under one multi-key `secretRef` should weigh this shared blast radius against the alternative of one `secretRef` per credential. |
-| Caching | Responses MUST NOT be stored unencrypted by any intermediary or client cache (`Cache-Control: no-store`). The durable local artifact is exclusively the sealed credential file (Change 5). |
-| Errors | `404` unknown ref; `403` unauthorized. Error bodies MUST be RFC 9457 (`application/problem+json`) Problem Details. Devices MUST key behavior on status code, not body shape — the Problem Details `type`/`title` fields are diagnostic aids, not a machine-readable control-flow signal this SUP defines. These are independent obligations on different actors: RFC 9457 conformance binds the MSS and is judged by testing the MSS in isolation; the status-code-authoritative rule binds the device and holds regardless of whether a given MSS response is conformant. A device receiving a malformed or non-RFC-9457 body under this profile MUST still act on the status code alone and MUST NOT treat the format deviation itself as a distinct error condition — a non-conforming body is a defect in the MSS, not license for different device behavior. |
-
-#### Compatibility profile: KV-v2 wire shape
-
-A deployment MAY instead operate its MSS as a KV-v2-compatible backend (the shape HashiCorp Vault and OpenBao's KV v2 secrets engine natively speak), at:
-
-```https
 GET /v1/secret/data/{secretRef}
 ```
 
-| Aspect | Requirement |
-|---|---|
-| Response body | JSON object containing at minimum `data.data` (the secret key-value map) and `data.metadata.version` (monotonic integer, the change token under this profile). Additional KV v2 metadata MAY be present and MUST be ignored if unrecognized. `data.data` is identically unconstrained in cardinality to the primary profile's `data` field; the same `dataKey`-selection rule (Change 2) applies without variation by profile. |
-| Rotation polling | Same principle as the primary profile, including polling cadence and rate-limit handling, keyed on `data.metadata.version` instead of a top-level `version` field. |
-| Caching | Same MUST NOT as the primary profile — this property does not vary by profile. |
-| Errors | `404` unknown ref; `403` unauthorized; problem-detail bodies per RFC 9457 are informative only under this profile — KV-v2-native backends (including OpenBao unmodified) typically return Vault-style error bodies, not RFC 9457. Devices MUST key behavior on status code, not body shape, exactly as under the primary profile. |
+**Response body:**
 
-A deployment operating the compatibility profile MUST NOT claim conformance to the primary profile's response-body schema, and vice versa. The two profiles are not interchangeable within a single MSS/device pairing.
+```json
+{
+  "data": {
+    "data": { "<key>": "<value>" },
+    "metadata": { "version": 42 }
+  }
+}
+```
 
-**Design rationale (informative).** The Margo-native envelope is the primary conformance target because Margo's role-based contracts should not require every implementation to speak a third party's wire format to conform. RFC 9457 is required for the primary profile's error responses because a newly-defined interface has no legacy body shape to preserve; it remains informative-only under the compatibility profile because a KV-v2-native backend (including OpenBao unmodified) does not produce it, and requiring it there would break the "deploy unmodified" promise the compatibility profile exists to keep. Profile selection is a deployment-time configuration choice, not an in-band, per-request negotiation: an `Accept`-header or capability-flag scheme was considered and not adopted, since it would be a new conformance surface for a choice that is fixed per deployment in practice, and it would depart from the pattern this SUP already uses for authentication-binding selection (Change 4).
+Requirements:
+
+- `data.data` (object, REQUIRED) — the secret key-value map.
+- `data.metadata.version` (integer, REQUIRED, monotonic) — the change token.
+- Additional fields **MAY** be present; devices **MUST** ignore unrecognized fields.
+- `ETag: "<version>"` — the version integer as a quoted string, strong validator (RFC 9110 §8.8.3). **MUST NOT** use weak-validator prefix `W/`.
+- `Cache-Control: no-store` — responses **MUST NOT** be cached unencrypted by any intermediary or client.
+- Devices **SHOULD** use `If-None-Match` for conditional fetch; `304 Not Modified` means no change.
+- Polling interval: no more than once per five minutes absent operator configuration. Devices **SHOULD** apply jitter (±20%). MSS **MAY** return `429` with `Retry-After`; devices **MUST** honor it.
+
+**Status codes (normative):**
+
+| Code | Meaning | Device behavior |
+|---|---|---|
+| 200 | Success | Process response |
+| 304 | Not Modified | No action |
+| 403 | Outside authorization scope | Resolution failure |
+| 404 | Unknown/unresolvable secretRef | Resolution failure |
+| 429 | Rate limited | Suspend polling per `Retry-After` |
+| 5xx | Transient server error | Retain sealed credential, retry with backoff |
+
+- Devices **MUST** key behavior on status code alone. Devices **MUST NOT** parse error bodies for control flow.
+- MSS **SHOULD** emit RFC 9457 Problem Details bodies for diagnostic purposes.
+- Any status not listed above (400, 422, etc.) during steady-state polling **MUST** be treated as transient: retain current credential, surface as fault, retry.
 
 ### Change 4: Authentication and authorization
 
-- **AuthN (sole normative binding):** A conformant MSS MUST support mTLS with X.509-SVID per the MIAF identity model as the primary authentication binding. A conformance claim MUST state which of the two authentication bindings defined in this Change — the normative mTLS/X.509-SVID binding, or the RFC 9421 compatibility profile below — was used.
+**Authentication — sole binding:** mTLS with MIAF X.509-SVIDs.
 
-  > **MSS server identity (MUST):** the MSS MUST present a Trust-Domain-scoped X.509-SVID as its TLS server certificate. A device MUST recognize the MSS following the same recognition discipline the WFM Identity Profile defines for a WFM Client recognizing its WFM (`wfm-identity-profile.md`, "Recognition by the WFM Client"):
-  >
-  > 1. validate the presented SVID against the device's own Trust Domain's Trust Bundle;
-  > 2. extract the SPIFFE ID from the URI SAN and verify that it is **exactly** `spiffe://<trust-domain>/margo/mss/<mss-id>`, where `<trust-domain>` is the device's own Trust Domain — taken from the device's own SVID, never inferred from Trust Bundle contents or any other source — and `<mss-id>` is non-empty; and
-  > 3. treat the MSS as unauthenticated and transmit no credential if either check fails — including where the SPIFFE ID names a different Trust Domain than the device's own, or where the SAN merely contains `/margo/mss/` as a substring without matching this form exactly.
-  >
-  > A device MUST NOT accept an MSS whose SPIFFE ID names a Trust Domain other than the device's own. MIAF does not define trust across Trust Domains in its current release: *"Trust across Trust Domains (federation) is not defined in this release and is expected to be addressed in a future revision"* (`identity-framework.md`, "Scope and Applicability"). A federated MSS is therefore out of scope for this SUP, the same way MSS discovery is out of scope above (see the Requirements alignment acknowledgement), and MUST be revisited once MIAF defines a federation mechanism this SUP can build on. *(As of 2026-08-09 — re-verify against PR #194's current head before vote; both the trust-domain-equality rule and the federation-deferral statement are read from PR #194, not from integrated `margo/specification` text.)*
-  >
-  > The MSS is a principal class this SUP introduces; neither MIAF nor the WFM Identity Profile defines a path convention for it (MIAF's own device identity profile is itself deferred to a future revision). This SUP resolves that gap using MIAF's own extensibility mechanism rather than inventing new machinery: per MIAF's identity model ("Each identity profile claims a non-conflicting sub-prefix and defines its structure... future SUPs may add profiles for new principal classes without redefining the framework"), an MSS's SPIFFE ID MUST take the form `spiffe://<trust-domain>/margo/mss/<mss-id>`, represented by an X.509-SVID issued by the Trust Domain's MIS under MIAF's standard cryptographic and validation rules.
-  >
-  > **This SUP does not provision the MSS as a WFM-class principal**, and implementers MUST NOT reuse the `spiffe://<trust-domain>/margo/wfm/<wfm-id>` path form for an MSS. That path carries WFM-specific role semantics under the WFM Identity Profile — it is the namespace under which WFM Client identities are issued, and a WFM Client's own peer-recognition logic is written against exactly that path form to confirm it is talking to its issuing fleet manager. An MSS is not a workload fleet manager and issues no WFM Client identities of its own; reusing the WFM path form would misencode that relationship and could cause a device's or WFM Client's WFM-recognition check to be satisfied by an MSS, or vice versa. *(As of 2026-08-07 — re-verify before vote that no other Approved or in-flight SUP has since claimed the `margo/mss/` sub-prefix for a different purpose.)*
+- MSS **MUST** present a Trust-Domain-scoped X.509-SVID as its TLS server certificate.
+- Device **MUST** validate the MSS's SVID against the device's Trust Domain's Trust Bundle.
+- Device **MUST** verify the MSS's SPIFFE ID is exactly `spiffe://<trust-domain>/margo/mss/<mss-id>`, where `<trust-domain>` is from the device's own SVID.
+- Device **MUST** treat the MSS as unauthenticated if validation fails. **MUST NOT** transmit credentials.
+- Device **MUST NOT** accept an MSS whose SPIFFE ID names a different Trust Domain.
+- MSS **MUST** keep its trust-anchor set current with the Trust Bundle, refreshing within `spiffe_refresh_hint` or an operator-configured interval.
 
-- **MSS trust-anchor currency (MUST):** the MSS, as a verifier of MIAF X.509-SVIDs, MUST keep its configured trust-anchor set current with the Trust Domain's published Trust Bundle, refreshing at an interval no looser than the bundle's `spiffe_refresh_hint` (or an operator-configured interval where no hint is published). A Trust Bundle rotation that removes a compromised anchor MUST reach the MSS's own trust-anchor configuration within that interval. An MSS that does not keep its trust-anchor set current re-admits a revoked issuing authority at exactly the interface — secret retrieval — this SUP exists to protect, defeating the Trust Domain's only anchor-level revocation path. *(See the Reference Implementation Statement for how a path-policy-based backend typically maps a multi-anchor Trust Bundle during a rotation overlap.)*
+**Authorization — identity-derived scope:**
 
-- **RFC 9421 compatibility profile (deprecated, sunsetting).** A deployment that has not yet onboarded SPIFFE identity MAY authenticate to the Secret Retrieval contract using RFC 9421 HTTP Message Signatures over HTTPS. This is a transition accommodation, not a binding of equal standing, and it carries the following requirements:
+- MSS **MUST NOT** serve a secretRef outside the authorization scope derived from the requesting device's verified X.509-SVID. Return 403.
+- MSS **SHOULD** further narrow scope to secretRefs present in the device's current Desired State.
+- WFM **MUST** write the secret value to the MSS before publishing Desired State referencing that secretRef.
 
-    | Aspect | Requirement |
-    |---|---|
-    | Replay defense | Requests MUST follow the replay-defense profile already normative for the Margo Management Interface (`api-requirements-and-security.md`): the `created` signature parameter MUST be present, and the MSS MUST reject a request whose `created` timestamp falls outside a configurable validity window (the Management Interface's own reference value is five minutes) or in the future beyond a bounded clock-skew allowance. This SUP does not define a second, distinct RFC 9421 profile. |
-    | Authorization | A deployment operating on this profile **MUST NOT claim conformance to the least-privilege authorization contract below**, and a conformance claim made under this profile **MUST affirmatively state that least-privilege authorization was not in force.** That contract binds grants to a device's SPIFFE ID; this profile establishes a principal of a different kind — a Client-ID resolving to a pre-registered X.509 certificate — for which this SUP defines no entity-mapping, revocation-ordering, or trust-anchor-currency contract. Whatever authorization the MSS applies under this profile is outside this SUP's contract and MUST be documented by the operator. |
-    | Sunset | A device MUST migrate to the normative mTLS/X.509-SVID binding once its Trust Domain is reachable and an SVID has been issued to it. An MSS MAY refuse this profile by policy at any time, and SHOULD refuse it once its deployment's Trust Domain is operational. (See the Requirements alignment acknowledgement's Out of scope note for how a device acquires that SVID — a separate, not-yet-Approved proposal.) |
-    | Direction of travel | See Alternatives considered for why this profile is retained rather than dropped, and its expected sunset. |
+**Scope withdrawal:**
 
-- **AuthZ:** the MSS MUST return a secret only to a device whose **current Desired State references that `secretRef`** (least-privilege by manifest).
-  - Where the MSS backend authorizes via static path- or prefix-based policies rather than native manifest awareness, the operator or WFM MUST supply an integration layer — "policy synchronization glue" — that keeps MSS-side grants in sync with each device's current Desired State. This glue MUST conform to the following minimal sub-contract, so that independent WFM implementations remain interoperable at the boundary that matters — the resulting authorization state — without Margo mandating a full policy language:
+- MSS **MUST** provide a means to reduce or withdraw a device's authorization scope, effective on next retrieval, independent of device-side state, Desired State publication, or device-side confirmation.
 
-    | Aspect | Requirement |
-    |---|---|
-    | Path grammar | Policy grants MUST be exact-match only, one grant per `secretRef` currently present in the device's Desired State. Glob/prefix wildcards MUST NOT be used to satisfy this contract (operators MAY layer broader local policy outside this contract, at their own risk). |
-    | Entity mapping | Each device principal (identified by its SPIFFE ID per the MIAF identity model) MUST map to exactly one MSS-side policy identity (e.g., one policy identity in the MSS's authorization model). The mapping MUST be deterministic and stable across manifest updates for the same device. **This sub-contract presupposes the normative mTLS/X.509-SVID binding.** This SUP does not define an equivalent entity-mapping, revocation-ordering, and trust-anchor-currency contract for any other binding. A deployment authenticating by other means — including the RFC 9421 compatibility profile above, which *does* establish its own device principal (a Client-ID resolving to a pre-registered X.509 certificate, per the Margo Management Interface's existing profile) but no SPIFFE-ID-based one — cannot satisfy this row as written, and MUST NOT claim it does. |
-    | Grant ordering | When a `secretRef` is added to a device's Desired State, the corresponding policy grant MUST be applied, and confirmed applied, before the WFM publishes the Desired State update that adds it. "Publishes" names the WFM's own act of making a new or updated state manifest available for the device to fetch — a WFM-internal event, testable without any device cooperation. **A device MUST NOT receive a manifest referencing a secret it is not yet authorized to fetch.** Anchoring this requirement to publication, rather than to any later, device-observable event (a confirmed fetch, or a confirmed adoption), is required for this row to hold: a device can fetch a manifest at any point after publication, so any later anchor would permit a real window in which a device has already fetched, and could already request the secret, before the WFM's own bookkeeping catches up. The same batch discipline applies to this row: a WFM adding several `secretRef`s in one Desired State update MUST NOT include a `secretRef` in that update's added set unless its own grant is confirmed applied — an unconfirmed addition MUST be held out of that update, never published early on the strength of its batch-siblings' confirmed grants. |
-    | Revocation ordering | When a `secretRef` is removed from a device's Desired State, the corresponding policy grant MUST be revoked synchronously, at the point the WFM makes that removal decision — not deferred, batched, or made contingent on any later event. This revocation MUST complete — the WFM MUST receive a positive confirmation of revocation from the MSS (or its policy-synchronization glue) — before the WFM publishes the Desired State update that removes the `secretRef`. A WFM that has only *initiated* revocation, without confirmation of completion, MUST NOT publish the update; it MUST either wait for confirmation or treat the absence of confirmation as an operational fault under its own error-handling policy. This SUP defines no state named "in progress," "pending," or equivalent as a substitute for confirmed completion, and no such state satisfies this row. Revocation MUST be synchronous — eventual/best-effort revocation MUST NOT be used to satisfy this contract, since it creates a window of over-privilege that undermines the least-privilege property this contract exists to provide. This row's per-`secretRef` binding applies independently within a single Desired State update that removes more than one `secretRef` at once: the WFM MUST NOT include a `secretRef` in that update's removal set unless that specific `secretRef`'s revocation is confirmed (or excepted below) — a partially-confirmed batch MUST be split, publishing only the confirmed removals and leaving any unconfirmed `secretRef` still referenced and excluded from that update's removal set for independent retry, never carried along as removed on the strength of its batch-siblings' confirmed revocations. **Exception — MSS withdrawn from the Trust Domain (MAY).** Where the WFM (or its policy-synchronization glue) can establish — from the Trust Domain's current Trust Bundle no longer carrying the MSS's issuing trust anchor (per MIAF's Trust Anchor Rotation Playbook), or from the MSS's last-validated X.509-SVID's `notAfter` having passed with no successor SVID observed — that no device can any longer authenticate this MSS, the WFM MAY publish the Desired State update removing the `secretRef` without a positive revocation confirmation from it, because the exposure this row otherwise protects against is then closed by construction: a device cannot retrieve a secret from an MSS whose certificate it will refuse to validate. An elapsed retry budget, timeout, or unanswered request — with the MSS's trust anchor still current in the Trust Bundle and its SVID unexpired — does NOT satisfy this exception: the MSS may remain live and trusted by a device even while unreachable from the WFM, and force-publishing on reachability alone would remove only the WFM's own bookkeeping while leaving the underlying grant, and the MSS's ability to serve it, untouched. |
+**Retrieval audit:**
 
-    > **What this ordering does and does not close (informative).** The property that actually bounds a de-scoped or compromised device's ability to keep retrieving a secret it should no longer hold is the synchronous revocation stated above — it takes effect at the WFM's removal decision, independent of Desired State publication, of any device-side fetch, and of any device-side confirmation. A device already holding an older manifest that still references the `secretRef`, attempting to fetch the secret after revocation, receives `403` regardless of what its local Desired State copy says. The publish-ordering requirement is a bookkeeping discipline layered on top — it prevents the WFM from considering a removal complete before the authorization side has actually caught up — but implementers MUST NOT read it as the mechanism that closes the exposure window; that mechanism is the synchronous revocation alone. The administrative-withdrawal exception above is not a second such mechanism: it applies only once the MSS's own identity has been cryptographically withdrawn, at which point synchronous revocation is vacuously satisfied — no device can reach an MSS it can no longer authenticate — subject to the same residual staleness bound MIAF's own Trust Bundle refresh model already carries (a device that has not yet refreshed keeps trusting a retired anchor until its own next refresh; see MIAF's identity-security-considerations, "Blocked Trust Bundle refresh").
-    >
-    > **Forward-compatible note on device-side confirmation (informative).** `specification-enhancements` PR #77 ("Read receipts for desired state," stage P2 as of 2026-08-07, OPEN — not yet Approved) proposes an `adoptedManifestVersion` field on the `DeploymentStatusManifest`, letting a device report which Desired State revision it has actually begun applying. If and when PR #77 lands, a WFM MAY use it as an additional, device-confirmed signal that a device has moved past a manifest revision referencing a since-revoked `secretRef` — valuable for audit and incident-response corroboration (see the retrieval-logging requirement below) but not required for, and not a precondition of, the ordering and revocation guarantees above, which are already fully specified and testable against integrated spec text today. This SUP does not depend on PR #77.
+- Retrieval events **MUST** be logged by the MSS, correlated to device principal, secretRef, and version.
 
-    This is real integration work — a conformant MSS backend using native path/prefix policy alone does not satisfy this sub-contract merely by being deployed; the synchronization glue above MUST exist and MUST be tested.
+### Change 5: Device-side obligations
 
-    > **Interoperability limitation (informative).** This sub-contract specifies the resulting authorization state and its timing properties — deterministically and testably, independent of any one MSS backend's policy language — but defines no wire protocol, payload schema, or API by which a WFM communicates a grant or revocation to an MSS. Consequently, this SUP does **not** by itself achieve interoperability between an independently-developed WFM and an independently-developed MSS: a conforming pairing requires integration work — custom glue code, a vendor-specific adapter, or same-vendor development of both roles — and that integration work is neither specified nor validated here. What this SUP does guarantee is that any such integration, once built, is conformance-testable by observable behavior alone: a retrieval attempt against a revoked `secretRef` MUST return `403`, regardless of which WFM or MSS implementation is paired. A normative WFM-to-MSS policy-synchronization protocol is a natural successor proposal; this SUP deliberately does not attempt one within this revision's scope.
-  - Retrieval events MUST be logged by the MSS (audit), correlated to the device principal, `secretRef`, and secret version retrieved.
-
-> **Security consideration — what "revoked" means here.** This Change's synchronous-revocation requirement operates entirely at the **authorization** layer: it governs whether a device holding a currently-valid X.509-SVID may still fetch a given `secretRef`. It does **not** revoke the SVID itself. MIAF specifies no online revocation check for X.509-SVIDs — no OCSP, no CRL; a compromised SVID is withdrawn only by removing its Trust Domain's trust anchor or by the SVID's own (short) lifetime expiring, both of which are fleet-wide and slow relative to a single-device incident. MIAF's own security model treats local, per-verifier authorization as the primary control against a stolen or misused credential in that interval.
->
-> This Change's synchronous `secretRef`-grant revocation is therefore not a redundant control layered on top of SVID revocation. For the window between a suspected device compromise and that device's SVID expiring or its trust anchor rotating out, **it is the only mechanism in this stack that can immediately stop that device from retrieving secrets it is no longer trusted to hold.** Implementers MUST NOT read this Change's "revocation" as SVID revocation: a compromised device's SVID remains cryptographically valid throughout.
-
-### Change 5: Device-side storage, injection, and destruction
-
-| Rule | Level |
+| Requirement | Level |
 |---|---|
-| No secret plaintext on any world/group-readable path, ever. Conformance testing of this property MUST cover the surfaces enumerated under *Residue-zero* below, and MUST distinguish expected runtime-injected files (e.g. the network-identity files a container runtime writes at startup) from workload-caused writes, by measuring a per-image startup baseline before judging the property. | MUST |
-| Devices with a hardware root of trust MUST seal secrets at rest, binding secret availability to that root of trust, and MUST inject them such that decrypted plaintext exists only in a volatile, container-scoped location for the lifetime of the consuming workload. Any mechanism satisfying the binding and volatility properties conforms; reference mechanisms are catalogued in the non-normative Implementation Notes companion to this SUP. | MUST |
-| Devices without a hardware root of trust MUST declare their actual at-rest posture per Change 6 — `software` where key material is not recoverable from the storage medium alone, `host-bound` where it is, `none` where no sealing is performed. A device MUST NOT declare a tier stronger than the protection it provides. | MUST |
-| A container runtime's native secret-injection mechanism MUST NOT be claimed as at-rest protection unless that mechanism is documented by its maintainer to encrypt secret content at rest. Where a runtime's native mechanism does not provide at-rest encryption, the runtime's shell/exec-based or plugin-based secret-sourcing facility MAY instead serve as the integration point to a separate OS-level sealing mechanism. Runtime-specific traps and reference integrations — including at least one widely-used runtime whose default file-backed driver stores plaintext on disk — are catalogued in the non-normative Implementation Notes companion to this SUP. | MUST NOT / MAY |
-| **Privileged decryption (normative, outcome-based).** Decryption of a sealed secret MUST be performed by a component holding the privilege or hardware access the sealing mechanism requires — never by the unprivileged process that ultimately consumes the plaintext. This is a property of the decryption path, not of where the workload container runs. A conformant implementation MUST NOT decrypt a sealed secret inside the same unprivileged execution context that will consume its plaintext, even transiently. This privilege-separation property is not specific to any one init system: systemd, s6, runit, and OpenRC each provide a native mechanism for a service definition to perform a privileged setup step before dropping to an unprivileged long-running process. Of the four, only the systemd mechanism is gated behind a version floor below which it is unavailable; the other three are long-stable, general-purpose primitives with no comparable version trap. Reference mechanisms for all four, including primary-source citations, the systemd version floor, and perishability markers, are documented in the non-normative Implementation Notes companion to this SUP. Implementers unfamiliar with their platform's privilege-separation and session-persistence primitives are the most likely to under-implement this requirement on a first read; consult the companion, and the note above, before treating a naive implementation as conformant. | MUST |
-| A workload's service-manager instance responsible for consuming a decrypted credential MUST be configured to remain active independent of any interactive session that created it, and MUST start automatically at device boot without operator presence — independently of, and in addition to, any credential-sealing guarantee. A device's credentials can be perfectly sealed and re-injectable, and the offline-restart MUST below will still fail, if this precondition is unmet. A reference mechanism for configuring this persistence on a specific service-manager family is documented in the non-normative Implementation Notes companion to this SUP. The specific failure mode this requirement guards against — a service manager torn down when its creating interactive session ends — is a systemd `--user`-scope-specific default, documented in the companion for systemd-based implementers. Platforms whose normal service-management model has no equivalent per-session-scoped manager (most non-systemd init systems, where daemons are supervised at system scope from boot by construction) typically satisfy this MUST via their platform's ordinary service-definition mechanism, with no additional configuration required. Implementers unfamiliar with their platform's privilege-separation and session-persistence primitives are the most likely to under-implement this requirement on a first read; consult the companion, and the note above, before treating a naive implementation as conformant. | MUST |
-| Rotation: on version change observed per Change 3's change token, re-seal and re-inject; restart semantics follow the component type's update verb. Where the deployed component's type defines no update verb, re-injection following a rotation MUST default to the component's normal stop-then-start sequence — the same sequence the device already uses to apply any other Desired State change to that component — not an immediate forced kill. A device MAY define a shorter grace period specific to credential rotation, but MUST NOT skip whatever graceful-shutdown signal the component type otherwise honors for a normal update, solely because the trigger was credential rotation rather than a manifest change. If re-sealing the newly-retrieved value fails after a successful fetch — storage exhaustion, a TPM transient error, or any other local sealing fault — the device MUST leave the workload running unchanged on its current sealed credential, MUST NOT persist the newly-fetched plaintext to durable storage in any unsealed form as a means of surviving the fault, and MUST retry the fetch-seal cycle on its next rotation-polling interval. A device MUST surface a re-seal failure as a fault through its normal fault-reporting mechanism, so a rotation stuck in this state is operator-visible rather than silent. | MUST |
-| A transient failure of the Secret Retrieval contract encountered during rotation polling — a network timeout, an HTTP `5xx`, or a DNS resolution failure — MUST NOT be treated as a resolution failure under Change 2's fail-closed rule, which governs Parameter resolution at install/update time only. A device encountering such a failure during steady-state polling MUST continue operating its already-sealed, already-injected secret unchanged, MUST NOT tear down or restart the consuming workload as a result, and SHOULD retry the poll with a backoff strategy of the device's choosing. Only an authoritative, non-transient response — `403` (authorization denial) or `404` (unknown reference) — triggers the device-side handling this SUP already defines for a resolution or authorization failure; a transient network condition does not. A response that is neither one of the transient conditions enumerated above nor `403`/`404` — including `400`, `422`, or a response whose body fails schema validation — MUST be treated identically to a transient failure under this row: the device MUST continue operating its current sealed credential unchanged, MUST NOT tear down or restart the workload on the strength of that response alone, and SHOULD surface it as a fault through its normal fault-reporting mechanism. This SUP does not enumerate every HTTP status an MSS might return; `403` and `404` remain the only authoritative triggers for the resolution-failure handling this row otherwise reserves for them, and a device's default for anything else MUST be to hold, not to tear down. | MUST / SHOULD |
-| **Residue-zero on workload removal (normative, testable).** On workload removal, ALL of the following MUST be free of secret plaintext, verified by a conformance check **that is capable of failing** rather than one that merely asserts success: (1) the durable sealed artifact; (2) any volatile credential-delivery mount, checked *after* removal, proving the **mount instance was unmounted (destroyed)** rather than merely emptied while remaining mounted; (3) the workload's container-runtime writable/overlay layer for the removed instance, where the consuming runtime maintains one (e.g., an OCI-compliant container runtime's overlay filesystem); (4) the runtime's underlying image/content store, where the runtime maintains one (e.g., an OCI-compliant container runtime's local image store); (5) the service manager's other per-session runtime state for that workload; (6) the unit or manifest definition retained on disk — ciphertext or a reference only, plaintext MUST NOT appear; (7) the system/service log sink, scoped to the operation — by a timestamp-bounded time window where the log sink supports one, or by an ordinal/sequence delta between a snapshot taken immediately before and immediately after the operation where it does not — where an empty result, or a zero-delta result, MUST be treated as an inconclusive check, not a pass; (8) the consuming process's own environment block, where the injection point is an environment variable rather than a file or mount — verified torn down by the process's own termination; a conformance test for this surface MAY rely on process-exit as the destruction event, but MUST still enumerate it explicitly rather than silently omitting a surface a Compose deployment's `kind: secret` Parameter may depend on for its entire plaintext exposure. A conformance test for this property SHOULD demonstrate, via a positive control, that it can detect a deliberately planted plaintext residue on each surface it claims to cover. | MUST |
-| Offline behavior: a device MUST be able to (re)start its workloads using the last sealed credentials without MSS connectivity, subject to the service-manager persistence requirement above. The sealed credential artifact — not any agent response cache — is the durable artifact (see the agent caching caveat in the Reference Implementation Statement). | MUST |
+| No secret plaintext on any world/group-readable path. | **MUST** |
+| Devices with a hardware root of trust **MUST** seal secrets at rest, binding availability to that root. Decrypted plaintext exists only in a volatile, container-scoped location for the consuming workload's lifetime. | **MUST** |
+| Devices without hardware root of trust **MUST** declare their actual posture per Change 6. A device **MUST NOT** declare a tier stronger than the protection it provides. | **MUST** |
+| A container runtime's native secret-injection mechanism **MUST NOT** be claimed as at-rest protection unless documented by its maintainer to encrypt at rest. | **MUST NOT** |
+| Decryption **MUST** be performed by a privileged component — never by the unprivileged consumer. | **MUST** |
+| The service-manager instance consuming decrypted credentials **MUST** persist across sessions and start at boot without operator presence. | **MUST** |
+| On version change (Change 3), re-seal and re-inject; restart via the component's normal update sequence. If re-sealing fails, leave workload on current credential, surface fault, retry next poll. Never persist fetched plaintext unsealed. | **MUST** |
+| Transient retrieval failures during polling (5xx, timeout, DNS) **MUST NOT** tear down the workload. Continue on current sealed credential; retry with backoff. | **MUST NOT** |
+| Offline restart: device **MUST** (re)start workloads from last sealed credentials without MSS connectivity. | **MUST** |
+| **Residue-zero on workload removal** across: (1) durable sealed artifact; (2) volatile credential mount (unmounted, not just emptied); (3) container writable/overlay layer; (4) runtime image/content store; (5) service-manager per-session state; (6) unit/manifest definition (ciphertext or reference only); (7) system/service log sink (timestamp-bounded); (8) process environment block. Verified by a check **capable of failing**. | **MUST** |
 
-**Scope of the residue-zero guarantee.** The MUST above is scoped to reachable, unprivileged-visible state. Swapped or freed kernel memory pages are out of reach for an unprivileged audit; deletion unlinks rather than overwrites disk blocks; another user's or root's runtime state is invisible to a rootless audit by construction. Surfaces (3) and (4) above, and the rootless-audit framing in this paragraph, describe the OCI-container-runtime case, which this SUP treats as the common case but not the only one; a device whose execution model has no equivalent writable-overlay or image-store construct (a Wasm engine, a microVM, a native chroot/cgroup daemon) satisfies these two surfaces vacuously, and a device whose normal operating model has no rootless/unprivileged-account separation performs residue-zero verification with whatever privilege its own architecture provides rather than being exempted from it. This SUP does not enumerate the analogous surfaces for those execution models, the same boundary already drawn for deployment-profile `pointer` semantics above. Disk-block overwrite and swap encryption are device-hardening choices outside a software conformance test's reach and are addressed under Security considerations, not by this MUST.
-
-**Sealing invalidation on update (mechanism-agnostic).** This SUP intentionally does not mandate TPM or any specific attestation stack — `secretsAtRest: hardware` covers TPM-based sealing as one instance of a broader class: any mechanism that binds secret availability to a verifiable device or platform state (TPM PCR values, secure boot measurements, or an equivalent attestation-derived key release policy). If a device uses such a mechanism, and a platform update changes the state the sealing is bound to, the device's update orchestration MUST ensure one of the following before the state transition completes:
-
-1. re-encryption of all sealed secrets under the post-update state, verified successful prior to committing the transition, with rollback if re-sealing fails; or
-2. the sealing policy is bound to a state predicate stable across the specific class of update being performed (e.g., a signed platform-identity claim rather than raw boot-order-sensitive measurements), such that the update does not invalidate sealed material at all.
-
-Devices declaring `secretsAtRest: software` or `host-bound` (no verifiable-state binding) are unaffected by this clause — their key availability does not depend on measured boot state. In no case MUST a device reach a state where its sealed secrets are unrecoverable and the device cannot reach the MSS to re-fetch plaintext, as a direct consequence of a platform update. This is a normative property of any state-bound sealing mechanism a device chooses to implement, not a requirement tied to any specific sealing technology; reference mechanisms are catalogued in the non-normative Implementation Notes companion to this SUP.
+**Sealing invalidation on update:** If sealing is bound to measured platform state and a platform update changes that state, the device **MUST** either (a) re-encrypt all sealed secrets under the post-update state before committing the transition, or (b) bind to a state predicate stable across the update class.
 
 ### Change 5b: Runtime-scoped secrets
 
-Change 5 assumes the consumer of a secret is a workload container that already exists as a unit, and that injection means "into that unit's volatile credential mount." Some secrets are consumed by the **container runtime itself**, before any workload unit exists — an OCI registry credential needed at image-pull time being the motivating case (see WG-PROPOSAL-05).
+A **runtime-scoped secret** is consumed by the device's container runtime or service manager (e.g., an OCI registry credential at image-pull time), not by a deployed workload.
 
-A **runtime-scoped secret** is one whose consumer is the device's container runtime or service manager rather than a deployed workload. Such a secret:
-
-| Rule | Level |
+| Requirement | Level |
 |---|---|
-| MUST satisfy every sealing, declaration, and destruction requirement of Change 5 without exception. The at-rest taxonomy of Change 6 is agnostic to what a secret authorizes. | MUST |
-| MUST be sealed, decrypted, and placed where the consuming runtime will read it **before** that runtime attempts the operation the secret authorizes — for a registry credential, before the image pull, which is strictly earlier in the lifecycle than "before the workload starts." | MUST |
-| MAY be injected into a device-wide or namespace-wide credential store belonging to the runtime (e.g. an `auth.json`-equivalent) rather than a unit-scoped volatile mount, since no consuming unit exists at the time of use. Where it is, the destruction requirement of Change 5 applies to that store. | MAY |
-| Destruction or re-sealing of a runtime-scoped secret held in a device-wide or namespace-wide store MUST be triggered by (a) the corresponding Change 4 revocation-ordering event — the `secretRef` is removed from every Desired State that referenced it — or (b) superseding rotation per Change 3's version signal, whichever applies. **Change 5's own trigger, "on workload removal," has no referent for a secret with no owning workload and MUST NOT be read as satisfied by any single workload's removal** while other workloads, or the runtime itself, still depend on the secret. Because a runtime-scoped secret may have more than one current referrer, a device implementing this MUST evaluate "no longer referenced" against its **complete current Desired State**, not by reacting to a single workload's removal event, and MUST NOT reuse a single-owner destruction hook designed for a per-workload lifecycle event (such as a hook that fires when one specific workload instance stops) as this trigger, without first confirming that no other current referrer exists. A named example of such a single-owner hook, and why it is insufficient here, is discussed in the non-normative Implementation Notes companion to this SUP. | MUST |
-| Rotation of a runtime-scoped secret MUST be treated as affecting every future operation that secret authorizes, device-wide, until re-sealing completes — not as a single-parameter update. A rotation failure on a runtime-scoped secret SHOULD be surfaced with severity comparable to an offline-behavior fault. **This MUST NOT be read as requiring the runtime to block or queue operations while re-sealing is in flight — consistent with Change 5's Rotation row, the runtime MUST permit operations to proceed on the currently-sealed value until re-sealing completes, after which every subsequent operation uses the newly-sealed value.** | MUST / SHOULD |
+| All Change 5 sealing, declaration, and destruction requirements apply without exception. | **MUST** |
+| Secret **MUST** be sealed, decrypted, and placed before the runtime attempts the authorized operation. | **MUST** |
+| **MAY** be injected into a device-wide or namespace-wide credential store. Destruction requirements apply to that store. | **MAY** |
+| Destruction triggered by: (a) secretRef removed from all Desired State, or (b) rotation signal. Not by any single workload's removal while other referrers exist. | **MUST** |
+| Rotation affects all future authorized operations device-wide. Runtime **MUST** permit operations on current value until re-sealing completes. | **MUST** |
 
-**Mapping Change 5's residue-zero surfaces onto a device-wide store.** Surfaces (3) and (5) of Change 5's residue-zero list are phrased per removed workload instance — the runtime's writable/overlay layer *for the removed instance*, and the service manager's per-session state *for that workload* — and have no referent for a secret with no owning instance. For a runtime-scoped secret they are satisfied instead by auditing the consuming runtime's own device-wide or namespace-wide credential store and any runtime-internal cache of it. The remaining six surfaces apply unchanged.
+SUP-05 (OCI registry credentials) is expected to cross-reference this Change.
 
-This subclass is defined here, in Change 5b, because its ordering and rotation-blast-radius properties are general to any secret a device's runtime consumes on its own behalf, not specific to any one such secret. WG-PROPOSAL-05's OCI registry credential is expected to cross-reference this Change rather than restate it.
+### Change 6: `secretsAtRest` taxonomy
 
-### Change 6: DeviceCapabilities — `secretsAtRest`
-
-Permissible values: `hardware` | `software` | `host-bound` | `none`. **The tiers are keyed on the threat each posture actually resists, not on the mechanism used** — a mechanism-keyed enum forces devices to mis-declare, which is worse than a coarse one.
+`DeviceCapabilitiesManifest` gains a `secretsAtRest` field. Permissible values:
 
 | Value | Meaning | Resists |
 |---|---|---|
-| `hardware` | Secret release is bound to a hardware root of trust that ordinary OS-level file access cannot extract — a TPM 2.0 (SRK-bound, optionally PCR-bound), a discrete secure element, or an equivalent attestation-backed key-release mechanism. A device declaring `hardware` MAY additionally declare an informative `sealingMechanism: tpm2 \| secure-element \| other`. A hardware root of trust sealing a *disk-encryption* key rather than the secret itself — e.g. a TPM-sealed FDE key — is still `hardware`: the tier follows the ultimate root of protection, not the payload. | Extraction of key material by a host-level attacker; disk imaging |
-| `software` | Key material is **not recoverable from the storage medium alone** — e.g. full-disk encryption unlocked by an operator passphrase, or a network-bound unlock that retrieves the key from off-device. | Disk imaging / theft of powered-off storage |
-| `host-bound` | The secret is encrypted to a device or machine identity, but the key material resides on the same storage medium as the ciphertext (e.g. a host-key-bound encryption scheme with no independent-medium key). Recoverable by anyone with unencrypted access to the device's storage. | Exfiltration of the sealed artifact *in isolation* from its host — a leaked backup, a mis-committed unit file, an artifact intercepted in transit |
+| `hardware` | Bound to hardware root of trust (TPM 2.0, secure element, or equivalent). | Host-level extraction; disk imaging |
+| `software` | Key not recoverable from storage medium alone (e.g., FDE with off-device unlock). | Disk imaging / theft of powered-off storage |
+| `host-bound` | Encrypted to device identity, but key co-resident on same medium. | Exfiltration of sealed artifact in isolation |
 | `none` | No sealing claim. | — |
 
-Notes:
+Requirements:
 
-- The top tier is generalized beyond TPM 2.0 specifically so that a device with a non-TPM secure element is not forced to either mis-declare `tpm2` or under-declare `software`. This is consistent with Change 5's sealing-invalidation clause, which is already written mechanism-agnostic on the same basis.
-- **The tier is determined by where the effective unlock secret lives, never by the name of the encryption mechanism.** An FDE unlock secret stored in cleartext on the same device — including in a separate, unencrypted partition holding a key file for a different, encrypted volume, a long-standing and widely-supported disk-encryption pattern — is `host-bound`, not `software`, however the disk-encryption mechanism is labelled. This is the pattern most likely to appear on a device with neither a TPM nor reliable network connectivity at boot, since the alternative unattended-unlock approach — network-bound disk encryption, which retrieves the unlock key from an off-device service at boot — requires exactly the network reachability this SUP's offline-restart guarantee cannot assume. It deserves the explicit warning because its mechanism name invites the wrong declaration from the implementer most likely to need the tier. A concrete OS-level example of this pattern, and the version at which it became available in one widely-used implementation, is documented in the non-normative Implementation Notes companion to this SUP.
-- `host-bound` exists because collapsing it into `software` overclaims (an attacker with the disk image holds both ciphertext and key) while collapsing it into `none` under-claims and would lock a legitimate legacy device out of every secret-bearing parameter — including, under WG-PROPOSAL-05, its own registry credential.
-- A `software` or `host-bound` declaration MUST NOT be presented, in any conformance claim or deployment document, as protection against a compromised or physically-open **running** host.
-- WFMs SHOULD refuse to schedule `kind: secret` parameters onto `none` devices, and MAY apply finer per-secret policy across the other tiers (e.g. permitting a registry credential on `host-bound` while requiring `software` or `hardware` for a database credential). Such policy is outside this SUP's scope; the taxonomy exists to make it expressible.
-- `none` remains a conformant DeviceCapabilities declaration under this SUP's hardware-optional posture. It MUST still satisfy Change 5's universal "no secret plaintext on any world/group-readable path" MUST, which binds regardless of the declared value. `none` describes the absence of a state-bound sealing mechanism, not a licence to relax file-permission hygiene.
-- Devices implementing an attestation-gated secret-release profile (see Security considerations) MAY additionally declare the attestation mechanism in use via an informative `attestationMechanism` string field (vendor/project-defined values; e.g. a remote-attestation verifier for TPM PCR or IMA measurements), to aid interoperability tooling and audit.
+- A device **MUST NOT** declare a tier stronger than the protection it provides.
+- WFM **MUST NOT** treat a device's `secretsAtRest` declaration as attested (it is a self-report).
+- WFMs **SHOULD** refuse to schedule `kind: secret` parameters onto `none` devices.
+- `none` **MUST** still satisfy the "no plaintext on world/group-readable path" rule.
+- Devices **MAY** additionally declare informative `sealingMechanism` and `attestationMechanism` fields.
 
-**Hardware-optional posture.** A device with no TPM and no secure element is not, on that basis, out of conformance with this SUP. It declares `software` or `host-bound` honestly and is scheduled with open eyes. No MUST in Change 5 is conditioned on the presence of a hardware root of trust without an explicit alternative alongside it, and the privileged-decryption, service-manager-persistence, and residue-zero requirements are hardware-agnostic by construction — they depend only on privilege separation and on filesystem and log surfaces that exist on any device.
+### Change 7: secretRef template expansion
 
-**DeviceCapabilities target and forward compatibility (informative).** This SUP defines `secretsAtRest` (and its informative sibling fields `sealingMechanism`, `attestationMechanism`) as new properties of the currently-integrated `DeviceCapabilitiesManifest` schema (`device-capabilities.md`). A separate, independent proposal (Draft, stage P1 as of this revision) proposes bisecting `DeviceCapabilitiesManifest` into a static `DeviceManifest` and category-scoped `ProfileState` documents; under that model, a posture declaration such as `secretsAtRest` is expected to migrate to a `capability`-scoped `ProfileDefinition` without a change in semantics. This SUP does not depend on that proposal advancing, and defines its fields against the schema integrated in `margo/specification` today.
+A secretRef **MAY** contain template variables for device-specific path segments.
 
-**Relationship to existing assurance frameworks (informative).** No established assurance scheme — PSA Certified, FIPS 140-3, Common Criteria, TCG TPM 2.0, IEC 62443-4-2, ETSI EN 303 645, or IETF RATS/EAT (RFC 9711) — defines an intermediate tier for a key that is encrypted-at-rest but co-resident on the same storage medium as its own ciphertext; every one of them classifies that configuration at its lowest tier. This SUP's `host-bound` tier is a deliberate divergence from that convention, not an oversight, and the WG should expect the question. The reason: those bottom tiers were designed to lump together two configurations with materially different exfiltration-in-isolation properties — "no sealing claim at all" (`none` in this SUP's taxonomy) and "sealed to a device identity, but the key is recoverable alongside the ciphertext" (`host-bound`). Both fail identically against an attacker who already has the running host, but they do **not** fail identically against an attacker who has obtained only the sealed artifact in isolation — a leaked backup, a mis-committed unit file, an artifact intercepted in transit — where `host-bound`'s device-key binding is still a real (if narrow) barrier `none` does not offer. Collapsing that distinction is exactly what forces the mis-declaration this SUP's tiers exist to prevent.
+**Grammar:**
 
-**Relationship to IETF EAT (RFC 9711) `security-level`, stated precisely.** RFC 9711 defines a `security-level` claim graded 1 (`unrestricted`) through 4 (`hardware`), for use in signed attestation evidence. It is the closest machine-readable prior art to this SUP's taxonomy, and it is tempting to draw a direct correspondence — but the two taxonomies grade different axes and a naive one-to-one mapping would misrepresent both. EAT's `security-level` grades the isolation of the **Attesting Environment that generates and signs the claim**, not the at-rest exfiltration resistance of a passively-stored secret; and the standard is explicit that a co-resident key, `host-bound`'s exact case, is `1` (`unrestricted`) — the same value as this SUP's `none` tier, which is precisely the collapse the paragraph above explains why this SUP declines to make. **This SUP does not map its tiers onto EAT's `security-level` values, and implementers MUST NOT construct or imply such a mapping** (for example in a device's self-declared capability metadata) — doing so would borrow EAT's authority for a distinction EAT does not draw. Where a device is capable of producing EAT evidence, it MAY do so as a separate, independently-interpreted signal alongside its `secretsAtRest` declaration; the two are not substitutes for one another.
+```
+SEG = [a-z0-9]([a-z0-9._-]*[a-z0-9])?
+VAR = {{[a-z]+(\.[a-z]+)*}}
+secretRef = ^(SEG|VAR)(/(SEG|VAR))*$
+```
 
-**On self-declaration and the absence of a validation mechanism (informative, a named limitation).** RFC 9334 (RATS) establishes that an unappraised self-declaration is treated as untrusted until a Verifier appraises it against signed Reference Values. This SUP's `secretsAtRest` declaration has no such appraisal mechanism today: Change 6's rule that a device MUST NOT declare a tier stronger than the protection it provides is a MUST binding the *declaring device*, and this SUP defines no independent means for a WFM to verify it. **The WFM MUST NOT treat a device's `secretsAtRest` declaration as attested** — it is a self-report, with the same trust properties as any other unattested claim in this SUP's DeviceCapabilities surface, and scheduling policy that depends on the distinction between an attested and an unattested tier claim is not yet expressible under this SUP.
+**Rules:**
 
-For devices that can supply attestation Evidence, an optional hook exists rather than a requirement: a device MAY declare an informative `attestationMechanism` field naming the attestation scheme in use. **This SUP does not specify the appraisal mechanism, the Verifier role, or how an appraised result would override or corroborate the self-declared tier** — that is explicitly out of scope for this revision. A future SUP building CoRIM/EAT-based appraisal on top of this taxonomy is a natural extension, not a gap this revision attempts to close.
+- Variables occupy whole segments only (no intra-segment interpolation).
+- Expansion is device-side exclusively.
+- Variable values are derived from the device's X.509-SVID only.
+- Expanded values **MUST** match `SEG`.
+- Unknown variable → fail-closed (resolution failure per Change 2).
+- Template expansion support is **OPTIONAL**. A device that does not support it **MUST** treat any secretRef containing `{{` as a resolution failure.
 
-### Alternative conformance profile (informative): Sealed Parameters
+**Defined variables:**
 
-SOPS + age end-to-end encryption inside the existing Parameter path, for air-gapped or WFM-untrusted deployments. SOPS is a file format, not a service — no pull API, no rotation daemon — which is exactly why it remains the *complement* (trust minimization) rather than the baseline (fleet operations) to the MSS-based mechanism this SUP otherwise specifies.
+| Variable | Source |
+|---|---|
+| `{{device.id}}` | Per-device segment of the device's SPIFFE ID |
+| `{{device.group}}` | Group/site segment of the device's SPIFFE ID |
+
+### Change 8: Secret injection contract
+
+Requirements for delivering a resolved secret value to its consuming workload:
+
+- Device **MUST** make the resolved value readable by the consuming workload and no other.
+- Plaintext **MUST NOT** reach persistent storage.
+- Plaintext **MUST** cease to be readable once the workload stops.
+- Workload obtains the value by dereferencing a locator supplied at deployment time. `ParameterTarget.pointer` names the config key carrying the locator.
+- Secret value **MUST NOT** appear in the rendered deployment document, declared configuration, or runtime-inspection/status surfaces. Only the locator **MAY** appear.
+
+### Change 9: Encoding of non-textual secret material
+
+Where a secret value is non-textual (binary key material, certificates in DER form, or equivalent), the MSS **MUST** encode it as base64 (RFC 4648 §4) in the `data.data` value string. A device **MUST** decode before sealing. The `data.metadata` object **MAY** carry a `contentType` field (e.g. `application/octet-stream`) to signal encoding; where absent, the device **MUST** treat the value as UTF-8 text.
 
 ### Conformance impact
 
-| RFC 2119 | Statement |
-|---|---|
-| MUST | `kind: secret` Parameters carry `secretRef`, never a literal value; values absent from all manifests, params, status, logs. |
-| MUST NOT | A `kind: secret` Parameter carries any other value-resolution mechanism (e.g. `valueFrom`) as an alternative or fallback source. |
-| MUST | A device or WFM that fails to resolve a `secretRef` fails the corresponding install or update operation and does not substitute any other value source. |
-| MUST NOT | A `kind: secret` Parameter's `targets[]` entry targets a deployment profile whose specification does not yet define `pointer` semantics; such a target is treated as a fail-closed resolution failure. |
-| MUST | A conformant device exposes some means by which the operator-documented MSS address and Trust Domain reach it before its first Secret Retrieval attempt; the mechanism is unspecified. |
-| MUST | A conformance claim states which Secret Retrieval profile — the primary Margo-native envelope or the named KV-v2 compatibility profile — it is made under; a device is not required to speak both to a single MSS. |
-| MUST | The primary Margo-native envelope's response body carries `secretRef`, `version`, and `data` as REQUIRED fields, and error responses are RFC 9457 Problem Details. |
-| MUST | The MSS serves the Secret Retrieval contract only over an authenticated binding, and MUST support the normative mTLS/X.509-SVID binding. |
-| MUST | The MSS presents a Trust-Domain-scoped X.509-SVID as its TLS server certificate; a device validates it against the Trust Bundle and recognizes the MSS only by an exact match of its SPIFFE ID — never a SAN substring match — against the device's own Trust Domain, treating the MSS as unauthenticated and transmitting it no credential if either check fails. |
-| MUST | The MSS keeps its trust-anchor set current with the Trust Domain's published Trust Bundle. |
-| MUST NOT | A deployment on the deprecated RFC 9421 compatibility profile claims conformance to the least-privilege authorization contract — that contract is written against a SPIFFE-ID device principal, which this profile does not establish. |
-| MUST | Where the RFC 9421 compatibility profile is used, requests carry `created` and are rejected outside the validity window, per the Management Interface's existing profile; the device migrates to mTLS once its Trust Domain is reachable. |
-| MUST | Least-privilege-by-manifest authorization, with WFM-driven policy synchronization where the MSS backend is path-policy-based; grant revocation synchronous, anchored to the WFM's own removal decision. |
-| MAY | A WFM publishes a Desired State update removing a `secretRef` without a positive MSS revocation confirmation only where it has verified — via the Trust Bundle no longer carrying the MSS's trust anchor, or the MSS's last-validated SVID having expired with no successor — that no device can still authenticate that MSS; network unreachability of the MSS from the WFM alone MUST NOT be treated as satisfying this exception. |
-| MUST | Sealing at rest where a hardware root of trust is present; honest `secretsAtRest` declaration in every case; no tier declared stronger than the protection provided. |
-| MUST NOT | A WFM treats a device's `secretsAtRest` declaration as attested. |
-| MUST | Decryption performed by a component holding the required privilege — never by the unprivileged consumer of the plaintext. |
-| MUST | Unprivileged service-manager instance persists across sessions and starts at boot. |
-| MUST NOT | A runtime's native secret mechanism claimed as at-rest encryption where its maintainer does not document at-rest encryption; unencrypted client/intermediary caching of responses. |
-| MUST | On a version-change signal from Change 3, the device re-seals and re-injects via the component's normal update-restart sequence; if re-sealing a successfully-fetched value fails, it leaves the workload running on its current sealed credential, never persists the fetched plaintext unsealed to survive the fault, and retries on the next poll. |
-| MUST | Sealed credentials are the sole durable offline artifact; workload restart offline succeeds from them. |
-| MUST | Residue-zero on workload removal across the eight enumerated surfaces, verified by a check capable of failing. |
-| MUST | Runtime-scoped secrets available to the consuming runtime before the operation they authorize. |
+| Obligation | Actor | Level |
+|---|---|---|
+| `kind: secret` carries `secretRef`, never literal value | WFM, Device | **MUST** |
+| Resolution failure → fail install/update | Device | **MUST** |
+| Single retrieval contract at `/v1/secret/data/{secretRef}` | MSS | **MUST** |
+| Behavior keyed on status code, not error body | Device | **MUST** |
+| mTLS with X.509-SVID, MSS SPIFFE ID validated | MSS, Device | **MUST** |
+| Authorization scope derived from device identity | MSS | **MUST** |
+| Scope withdrawal independent of device state | MSS | **MUST** |
+| Write secret before publishing Desired State | WFM | **MUST** |
+| Seal at rest (hardware devices); honest declaration (all) | Device | **MUST** |
+| Privileged decryption, service persistence, offline restart | Device | **MUST** |
+| Residue-zero on removal (8 surfaces) | Device | **MUST** |
+| Injection by indirection; no plaintext in config/status | Device | **MUST** |
+| Template expansion support | Device | **OPTIONAL** |
 
 ### Backward compatibility
 
-This SUP is additive to the schema integrated in `margo/specification` today. The `Parameter` class gains two optional fields (`kind`, `secretRef`); a `Parameter` instance with no `kind` slot present is interpreted as `kind: value` (today's existing literal-value behavior), so no existing conformant `Parameter` document is invalidated by this SUP's introduction — verified directly against the live `Parameter` class definition (`application-description.linkml.yaml`), which carries no `kind` field today. `DeviceCapabilitiesManifest` gains `secretsAtRest` and its informative sibling fields (`sealingMechanism`, `attestationMechanism`); a device that predates this SUP simply does not declare them, and is not by that omission out of conformance with any existing requirement.
+This SUP is additive. `Parameter` gains optional `kind` and `secretRef`; absence of `kind` means `kind: value` (today's behavior). `DeviceCapabilitiesManifest` gains `secretsAtRest`; a device that predates this SUP simply does not declare it. No existing conformant document is invalidated.
 
-This SUP introduces a new role (the MSS) and a new interface (the Secret Retrieval contract); neither replaces nor constrains any existing Margo interface. No deployment that does not use `kind: secret` Parameters is affected by this SUP in any way.
+**Breaking change for pre-ballot implementers:** Rev 9 removes the dual-profile structure (primary Margo-native envelope + KV-v2 compatibility profile) present in Rev 8. Implementations built against Rev 8's primary Margo-native envelope shape must migrate to the single KV-v2-compatible contract defined in Change 3.
 
 ### Security considerations
 
-- The MSS holds plaintext; operators rejecting this trust boundary use the sealed-parameter profile (see Alternatives considered).
-- **Revocation layering.** This SUP's revocation is authorization-layer only and does not revoke a device's SVID. MIAF specifies no OCSP or CRL for X.509-SVIDs. See the security consideration under Change 4 — during a single-device incident, this SUP's grant revocation is the only immediate control available.
-- **`software` and `host-bound` are honest declarations, not degraded ones**, but their limits are narrow and must travel with any conformance claim: neither protects a compromised or physically-open running host, where whatever access reads the sealed blob typically also reaches the key that unseals it. `host-bound` additionally does not protect against whole-storage imaging. This SUP does not rank FDE variants against one another — where the FDE unlock key is held matters enormously, and that is an operator documentation obligation under Change 1's existing precedent.
-- **Mandatory access control and the credential mount.** On a device with MAC enforcement (e.g. SELinux in enforcing mode), the credential directory is typically mounted by the *system* manager, and an unprivileged user cannot relabel it — the usual container relabel flags fail. Implementers face a real trade among disabling label separation for the container (a genuine, named reduction in confinement, generally not scopable to the credential mount alone), running the workload at system scope (which defeats the unprivileged-workload goal), or delivering the secret over a socket rather than a file. This SUP does not mandate a resolution, but an implementer who has not chosen one deliberately will discover the trade on a production fleet.
-- **Environment-variable injection (Compose profile) — an honest carve-out, not a silent gap (informative).** Where a `kind: secret` Parameter targets a Compose-profile component, the deployment-profile-specific injection point named by `pointer` is an environment variable, per Margo's existing `ParameterTarget.pointer` semantics. An environment variable satisfies the letter of Change 5's world/group-readable-path prohibition (`/proc/<pid>/environ` is owner-readable) and the privileged-decryption MUST (decryption occurs in the privileged component that creates the container, before the unprivileged process is exec'd with the value already set). It does not carry the same isolation properties as a scoped volatile mount: it is inherited by every child process the container spawns, and is a documented accidental-exposure vector (CWE-526: Cleartext Storage of Sensitive Information in an Environment Variable) via crash dumps, error-handler environment dumps, and runtime-introspection tooling. Implementers MUST treat this as the honest, bounded exposure it is — comparable in spirit to the `host-bound` tier's own honesty discipline in Change 6 — not as equivalent to file-based, scope-limited delivery. Where the operator's threat model warrants tighter isolation, a Compose deployment SHOULD use the Compose Specification's native `secrets:` top-level element (file-mounted, typically under `/run/secrets/`) as the injection point in preference to an environment variable; this SUP does not mandate that choice for this revision, pending a decision on whether `pointer`'s Compose semantics should fork by `kind` in a future revision.
-- State-bound sealing (e.g. TPM PCR-bound) ties secrets to measured boot/platform state. Without explicit sequencing, a platform update that changes that state before re-sealing completes can leave a device unable to unseal its credentials and unable to reach the MSS to re-fetch plaintext (a "brick" scenario), which directly contradicts the offline-restart guarantee this SUP requires. Change 5's sealing-invalidation clause exists specifically to close this hazard; implementers MUST treat it as a hard ordering dependency in update orchestration, not an optional recommendation. The same hazard class can arise from a cause outside the device's own update orchestration — an unplanned platform-state change (for example, an out-of-band firmware update, a hardware fault, or tampering) that invalidates sealed material without the update-orchestration sequencing above ever running. This SUP does not define the required device posture for that case — permanent failure, a bounded restart loop, or a wipe-and-refetch — leaving it to the device's own boot-integrity and attestation policy, consistent with this SUP's existing appraisal-mechanism carve-out (Change 6).
-- **Restart posture is a real tension this SUP does not resolve.** A service manager configured to leave a failed workload stopped keeps a credential failure visibly failed and diagnosable; one configured to unconditionally restart a failed workload serves the offline-restart guarantee but turns an unsealable credential into a restart loop instead of a single clear failure signal. This is a device policy choice, not something this SUP's spec text resolves — flagged because a reference implementation must choose, and the choice is not obvious. The equivalent configuration directives for at least one common service manager are named in the non-normative Implementation Notes companion to this SUP.
-- **The two weak postures correlate, and WFM policy should reason about the combination.** A device's `secretsAtRest` tier and its Change 4 authentication binding are formally independent declarations — nothing in Change 5 or Change 6 depends on which binding a device uses, and a device on the RFC 9421 compatibility profile has a fully coherent path through both. But in a real fleet they correlate: a device without a hardware root of trust is disproportionately likely to also be on the RFC 9421 compatibility profile, because both reflect the same underlying fact — an older device predating recent identity and sealing capability rollouts, arriving together in a fleet's modernisation sequence rather than independently. WFM scheduling policy SHOULD therefore reason about the combination rather than each axis alone: a secret placed on a `host-bound` or `none` device that is *also* on the RFC 9421 compatibility profile has no cryptographic assurance on either axis, which is a materially different risk from either weakness by itself.
-- **The RFC 9421 compatibility profile has a principal, but not the one this contract is written against.** The RFC 9421 compatibility profile is *not* principal-less: it authenticates via a Client-ID resolving to a pre-registered X.509 certificate, proven by message signature, per the Margo Management Interface's own profile. What it lacks is a SPIFFE ID under MIAF's Trust Domain / Trust Bundle lifecycle, which is what this SUP's least-privilege entity-mapping row is written against — and, concretely, a path-policy-based backend typically has no native equivalent for mapping a Client-ID / message-signature identity to a policy entity the way it does for a SPIFFE URI SAN; supplying one would require a separate proxy or custom auth plugin this SUP does not specify. The consequence is real — a deployment on this profile sits outside the least-privilege contract, and the synchronous-revocation lever described above does not exist for it — so operators MUST NOT treat time on this profile as security-neutral. But implementers MUST NOT read that authorization gap as evidence that RFC 9421 cannot carry a device identity in principle; the WFM Identity Profile's own roadmap contemplates an HTTP message-signature profile keyed to the X.509-SVID, so this is today's integration boundary, not a permanent architectural one.
-- Retrieval metadata (who fetched what, when) is intentionally observable and audited.
-- Clock skew affects the RFC 9421 compatibility profile and SVID validity; time sync SHOULD be maintained.
+**Residual-risk table:**
+
+| ID | Risk | Mitigation in this SUP | Residual |
+|---|---|---|---|
+| R1 | MSS compromise exposes all plaintext | Role separation; audit logging | Operator trust boundary — documented, not eliminated |
+| R2 | Stolen SVID retrieves secrets until expiry | Identity-scoped authZ + scope withdrawal (Change 4) | MIAF has no OCSP/CRL; short SVID lifetime is the primary control |
+| R3 | `host-bound` device: key co-resident with ciphertext | Honest declaration; WFM scheduling policy | Does not resist powered-on host compromise |
+| R4 | `none` device holds secrets | WFM SHOULD refuse; `none` still requires file-permission hygiene | Operator accepts risk explicitly |
+| R5 | Stale Trust Bundle admits retired anchor | MSS must refresh within `spiffe_refresh_hint` | Bounded staleness window per MIAF model |
+| R6 | Platform update invalidates sealed material | Sealing-invalidation clause (Change 5) | Unplanned state change (firmware fault, tampering) not covered |
+| R7 | Environment-variable injection (Compose profile) | Satisfies privilege-separation MUST | Inherited by child processes; documented exposure vector (CWE-526) |
+| R8 | Restart loop on unsealable credential | Not resolved by this SUP | Device policy choice; flagged for implementers |
+| R9 | Clock skew affects SVID validity | Time sync SHOULD be maintained | Operational |
+| R10 | Log sink captures plaintext accidentally | Residue-zero surface (7) requires log audit | Bounded by timestamp window |
+| R11 | Non-textual secret misinterpreted as text | Encoding clause (Change 9) with `contentType` signal | Absent `contentType` defaults to UTF-8 |
+
+**Key notes:**
+
+- The MSS holds plaintext. Operators rejecting this trust boundary should evaluate sealed-parameter alternatives (see rationale companion).
+- This SUP's revocation operates at the authorization layer only — it does not revoke SVIDs.
+- `software` and `host-bound` are honest declarations; neither protects a compromised running host.
+- Retrieval metadata is intentionally observable and audited.
 
 ### References
 
-- MIAF identity model — SPIFFE X.509-SVID, Trust Domain, Trust Bundle validation. Approved (P3) in `specification-enhancements` PR #38; spec-text integration in `margo/specification` PR #194 (status current as of this revision's submission date; re-verify PR #194's state before vote), `system-design/specification/identity/trust-bundle-and-discovery.md`.
-- Margo WFM Identity Profile — Approved (P3), `specification-enhancements` PR #58, `proposals/wfm-identity-profile.md` (removal of the `PayloadSignature` / RFC 9421 scheme from the Margo Management Interface; `401 Unauthorized` on receipt).
-- MIAF Credential Provisioning and Acquisition — `specification-enhancements` PR #84 (stage P1, draft, not yet Approved as of this revision), defines the installed/enrolled/delivered SVID-acquisition modes for the WFM and WFM Client principal classes; this SUP presumes a device (WFM Client) already holds an SVID acquired by one of these modes.
-- Margo Management Interface — `system-design/specification/margo-management-interface/api-requirements-and-security.md` (RFC 9421 replay-defense profile).
-- RFC 9457 (Problem Details for HTTP APIs) — adopted directly for the MSS interface's error responses. `specification-enhancements` PR #73 (stage P2 as of 2026-08-07) proposes RFC 9457 as the Margo-wide OpenAPI error-response convention; this SUP's adoption does not depend on PR #73 landing.
-- RFC 9110 / RFC 7232 (conditional HTTP requests); RFC 9421 (HTTP Message Signatures, compatibility profile); RFC 9334 (RATS); RFC 9711 (EAT).
-- OpenBao (openbao.org) — reference implementation of the KV-v2 compatibility profile; KV v2 API, TLS certificate auth, Agent; MPL 2.0, LF/OpenSSF.
-- Compose Specification `secrets` element; WG-PROPOSAL-00 (The Helm Way); WG-PROPOSAL-05 (OCI registry credentials, builds on Change 5b).
-- Non-normative companion: `sup-04-implementation-notes.md` — OS/product-specific reference mechanisms, version floors, and known implementation traps for the requirements above.
-
-## Alternatives considered
-
-| Alternative | Verdict |
-|---|---|
-| HashiCorp Vault as reference impl | Rejected — BUSL 1.1 incompatible with embedding in an LF open standard ecosystem; OpenBao is the same lineage under MPL 2.0/LF governance. |
-| SPIRE Server + custom Go REST broker | Viable wrap; rejected as baseline because it rebuilds KV storage, versioning, and policy that OpenBao ships; remains the natural path if a future MIAF-adjacent SUP mandates SPIRE anyway — revisit then. |
-| flightctl `platform/secret` provider | Architecturally aligned (SecretRef → systemd credentials, Apache 2.0); design reference, not drop-in — coupled to the flightctl fleet model rather than the Margo Management Interface. |
-| Keylime attestation-gated delivery | Adopted as optional enhancement profile, not baseline — requires live verifier connectivity, conflicting with the offline-restart MUST. |
-| Kubernetes-origin controllers (ESO, CSI Secrets Store) | Rejected standalone — control-plane-tethered; ESO retained as design reference for the reference/fetch/inject split. |
-| Mechanism-keyed `secretsAtRest` enum (`tpm2 \| software \| none`) | Rejected — a mechanism-keyed enum has no honest slot for a non-TPM secure element, and none for a legacy device with neither TPM nor FDE. Threat-keyed tiers let every device declare something true. |
-| Co-equal dual binding, mTLS **or** RFC 9421 | Rejected — the two are not substitutable. The authorization contract binds grants to a SPIFFE ID; the RFC 9421 path establishes a different kind of principal (a Client-ID/certificate pair) that this SUP does not map into that contract, so "either binding" would silently mean "least privilege on one path and undefined on the other." Retained as a deprecated, sunsetting compatibility profile with its authorization limits stated. |
-| Drop RFC 9421 entirely, MIAF-only | Considered and not adopted for this revision. It is the cleaner end state, but it would leave deployments with no conformant path until PR #194 merges, since MIAF is not in integrated spec text today. The sunset clause is intended to reach the same destination without stranding the transition. Revisit at the revision following PR #194's merge — noting that PR #194 merging alone is not sufficient either, since a device also needs a portable SVID-acquisition path, which `specification-enhancements` PR #84 (stage P1, drafting as of this revision) has not yet reached Approved status to provide. Retaining RFC 9421 here does not conflict with the WFM Identity Profile's removal of `PayloadSignature`, which that profile's own §1/§7 structure scopes to the Margo Management Interface specifically, by its own text rather than by inference — the MSS is a distinct interface. |
-| KV-v2 wire shape as the sole or primary conformance target | Superseded — see Change 3. The Margo-native envelope is the primary conformance target; the KV-v2 shape is retained as a named, optional compatibility profile so a KV-v2-native backend (including OpenBao unmodified) remains conformant without being the mandatory shape. An in-band negotiation mechanism (`Accept` header or capability flag) for selecting between the two was considered and not adopted — profile selection is a deployment-time configuration choice, not a per-request one, mirroring how Change 4 already handles authentication-binding selection. |
-| Compose `secretRef` onto `valueFrom` (PR #54) instead of a sibling field | Rejected for this revision — PR #54 is stage P2, not yet Approved, and its own designed semantics (fallback to a literal `value` on resolution failure) are substantively incompatible with this SUP's fail-closed requirement for secrets. Composing onto it would either import a plaintext-fallback hazard or require this SUP to unilaterally carve an exception into a mechanism owned by a different proposal. `secretRef` remains a sibling top-level field. |
+- MIAF identity model — SPIFFE X.509-SVID, Trust Domain, Trust Bundle. Approved (P3) via `specification-enhancements` PR #38; integration tracked by `margo/specification` PR #194 (open — re-verify before vote).
+- Margo WFM Identity Profile — Approved (P3), PR #58.
+- MIAF Credential Provisioning — PR #84 (stage P1, draft, not Approved).
+- RFC 9457 — Problem Details for HTTP APIs.
+- RFC 9110 — HTTP Semantics (conditional requests, ETag).
+- RFC 4648 — Base Encodings.
+- RFC 9334 — RATS Architecture (informative).
+- OpenBao (openbao.org) — reference implementation; KV v2 engine; MPL 2.0, LF/OpenSSF.
+- Non-normative companions: `sup-04-rationale-and-alternatives.md`, `sup-04-implementation-notes.md`.
 
 ---
 
-*Prepared by Andrii Melashchenko (Belden Inc.), 2026-08-07. Subject to the Open Web Foundation Contributor License Agreement governing the Margo specification.*
+*Prepared by Andrii Melashchenko (Belden Inc.), 2026-08-10. Subject to the Open Web Foundation Contributor License Agreement.*

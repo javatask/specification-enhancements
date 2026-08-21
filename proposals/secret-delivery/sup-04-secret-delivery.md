@@ -1,7 +1,5 @@
 # Secret Delivery: Reference-Based Distribution and Device-Side Sealing
 
-**Revision 9 — 2026-08-10**
-
 ## Owner
 
 [@javatask](https://github.com/javatask) — Andrii Melashchenko, Belden Inc.
@@ -11,8 +9,6 @@
 This SUP defines how Margo delivers secret parameter values to devices without plaintext appearing in manifests, status reports, or logs. It introduces a `Parameter.secretRef` extension for referencing secrets by name, a Margo Secrets Service (MSS) role with a single retrieval contract, mTLS authentication scoped by the device's X.509-SVID identity, and device-side obligations for sealing, injection, and residue-zero destruction.
 
 ## Reason for proposal
-
-**Design philosophy.** Margo standardizes contracts, not products. The MSS is a role any conforming service can fill. This SUP specifies the minimum surface a voting member can evaluate in twenty minutes: what a device fetches, how it proves identity, and what it guarantees about the value once held. Mechanism lives in the non-normative companion (`sup-04-implementation-notes.md`); rationale lives in `sup-04-rationale-and-alternatives.md`.
 
 Four gaps in the current specification motivate this proposal:
 
@@ -30,13 +26,16 @@ This SUP addresses:
 
 **Out of scope (with named successors):**
 
-- WFM→MSS secret write path — the WFM MUST write secret values to the MSS before publishing Desired State referencing them; the write-path API is deferred to a future SUP.
+- WFM→MSS secret write path — deferred to a future SUP.
 - Dynamic credential issuance (short-lived tokens, just-in-time certificates) — deferred to a named successor SUP.
-- OCI registry credential delivery mechanism — deferred to SUP-05 (builds on Change 5b of this SUP).
+- OCI registry credential delivery mechanism — deferred to SUP-05.
 - SVID acquisition and provisioning (`specification-enhancements` PR #84, stage P1).
 - MSS discovery (how a device learns the MSS network address).
 
-**Dependency:** mTLS authentication rests on the MIAF identity model (PR #38, Approved P3; spec integration tracked by `margo/specification` PR #194, open as of this revision — re-verify before vote).
+**Dependencies:**
+
+- MIAF identity model — PR #38 (Approved P3). Spec integration tracked by `margo/specification` PR #194 (open — re-verify before vote).
+- WFM Identity Profile — PR #58 (Approved P3).
 
 ## Technical proposal
 
@@ -57,7 +56,7 @@ The MSS is a **role**, not a product. It is responsible for:
 - enforcing identity-derived authorization (Change 4); and
 - versioning secrets so devices detect rotation.
 
-Any service meeting these responsibilities fills the role. The MSS MAY be operated by the WFM vendor, the end customer, or a third party; the trust consequence (the MSS holds plaintext) MUST be documented by the operator.
+Any service meeting these responsibilities fills the role. The MSS **MAY** be operated by the WFM vendor, the end customer, or a third party; the trust consequence (the MSS holds plaintext) **MUST** be documented by the operator.
 
 ### Change 2: `Parameter` extension — `secretRef`
 
@@ -77,11 +76,11 @@ Requirements:
 - `kind: secret` **MUST** carry `secretRef`, **MUST NOT** carry a literal `value`.
 - A `Parameter` with no `kind` slot present **MUST** be interpreted as `kind: value` (backward-compatible default).
 - A `Parameter` carrying `secretRef` without `kind: secret` **MUST** be treated as malformed; fail-closed.
-- `secretRef` grammar: `^(SEG|VAR)(/(SEG|VAR))*$` where `SEG = [a-z0-9]([a-z0-9._-]*[a-z0-9])?` and `VAR = \{\{[a-z]+(\.[a-z]+)*\}\}` (see Change 7 for template variables).
+- `secretRef` grammar: `^(SEG|VAR)(/(SEG|VAR))*$` where `SEG = [a-z0-9]([a-z0-9._-]*[a-z0-9])?` and `VAR = \{\{[a-z]+(\.[a-z]+)*\}\}` (see Change 7).
 - Each `/`-delimited segment **MUST** be transmitted as a literal path segment in the retrieval URL (no percent-encoding of `/`).
 - `kind: secret` **MUST NOT** carry any alternative value-resolution field (e.g. `valueFrom`).
 - Resolution failure (unreachable MSS, 403, 404, unknown ref) **MUST** fail the install/update operation. No fallback substitution.
-- `ParameterTarget.dataKey` names the key within the response `data` object to extract. Where `data` contains exactly one key, `dataKey` MAY be omitted. Where `data` contains multiple keys, every target **MUST** carry `dataKey`; absence is a resolution failure.
+- `ParameterTarget.dataKey` names the key within the response `data` object to extract. Where `data` contains exactly one key, `dataKey` **MAY** be omitted. Where `data` contains multiple keys, every target **MUST** carry `dataKey`; absence is a resolution failure.
 - `pointer` semantics are defined per deployment profile. A `kind: secret` target **MUST NOT** reference a profile that has not yet defined `pointer` semantics.
 - Secret values **MUST NOT** appear in manifests, deployment YAMLs, bundles, `margo-params.env`, status reports, or logs.
 
@@ -93,7 +92,7 @@ Margo defines a single retrieval contract. The wire shape is Margo's own schema,
 GET /v1/secret/data/{secretRef}
 ```
 
-**Response body:**
+**Response (200 OK):**
 
 ```json
 {
@@ -171,6 +170,8 @@ Requirements:
 
 **Sealing invalidation on update:** If sealing is bound to measured platform state and a platform update changes that state, the device **MUST** either (a) re-encrypt all sealed secrets under the post-update state before committing the transition, or (b) bind to a state predicate stable across the update class.
 
+A reference mechanism satisfying these properties, including relevant version floors, is documented in the non-normative companion (`sup-04-rationale-and-alternatives.md`); conformance is judged against the MUSTs above, not against the referenced mechanism.
+
 ### Change 5b: Runtime-scoped secrets
 
 A **runtime-scoped secret** is consumed by the device's container runtime or service manager (e.g., an OCI registry credential at image-pull time), not by a deployed workload.
@@ -183,7 +184,7 @@ A **runtime-scoped secret** is consumed by the device's container runtime or ser
 | Destruction triggered by: (a) secretRef removed from all Desired State, or (b) rotation signal. Not by any single workload's removal while other referrers exist. | **MUST** |
 | Rotation affects all future authorized operations device-wide. Runtime **MUST** permit operations on current value until re-sealing completes. | **MUST** |
 
-SUP-05 (OCI registry credentials) is expected to cross-reference this Change.
+SUP-05 (OCI registry credentials) builds on this Change.
 
 ### Change 6: `secretsAtRest` taxonomy
 
@@ -268,8 +269,6 @@ Where a secret value is non-textual (binary key material, certificates in DER fo
 
 This SUP is additive. `Parameter` gains optional `kind` and `secretRef`; absence of `kind` means `kind: value` (today's behavior). `DeviceCapabilitiesManifest` gains `secretsAtRest`; a device that predates this SUP simply does not declare it. No existing conformant document is invalidated.
 
-**Breaking change for pre-ballot implementers:** Rev 9 removes the dual-profile structure (primary Margo-native envelope + KV-v2 compatibility profile) present in Rev 8. Implementations built against Rev 8's primary Margo-native envelope shape must migrate to the single KV-v2-compatible contract defined in Change 3.
-
 ### Security considerations
 
 **Residual-risk table:**
@@ -288,13 +287,6 @@ This SUP is additive. `Parameter` gains optional `kind` and `secretRef`; absence
 | R10 | Log sink captures plaintext accidentally | Residue-zero surface (7) requires log audit | Bounded by timestamp window |
 | R11 | Non-textual secret misinterpreted as text | Encoding clause (Change 9) with `contentType` signal | Absent `contentType` defaults to UTF-8 |
 
-**Key notes:**
-
-- The MSS holds plaintext. Operators rejecting this trust boundary should evaluate sealed-parameter alternatives (see rationale companion).
-- This SUP's revocation operates at the authorization layer only — it does not revoke SVIDs.
-- `software` and `host-bound` are honest declarations; neither protects a compromised running host.
-- Retrieval metadata is intentionally observable and audited.
-
 ### References
 
 - MIAF identity model — SPIFFE X.509-SVID, Trust Domain, Trust Bundle. Approved (P3) via `specification-enhancements` PR #38; integration tracked by `margo/specification` PR #194 (open — re-verify before vote).
@@ -305,8 +297,11 @@ This SUP is additive. `Parameter` gains optional `kind` and `secretRef`; absence
 - RFC 4648 — Base Encodings.
 - RFC 9334 — RATS Architecture (informative).
 - OpenBao (openbao.org) — reference implementation; KV v2 engine; MPL 2.0, LF/OpenSSF.
-- Non-normative companions: `sup-04-rationale-and-alternatives.md`, `sup-04-implementation-notes.md`.
+
+## Rejection reason
+
+*(Reserved for process use.)*
 
 ---
 
-*Prepared by Andrii Melashchenko (Belden Inc.), 2026-08-10. Subject to the Open Web Foundation Contributor License Agreement.*
+*Prepared by Andrii Melashchenko (Belden Inc.). Subject to the Open Web Foundation Contributor License Agreement.*

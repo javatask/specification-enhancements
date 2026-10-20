@@ -262,6 +262,10 @@ The EU Trusted List of QTSPs is available at: <https://eidas.ec.europa.eu/efda/t
 | Production suitable | No | Yes | Yes |
 | Regulatory alignment | None | IEC 62443, internal policy | eIDAS, EU CRA, IEC 62443 |
 
+### 4.5 Provisioning trust at fleet scale
+
+SUP-03 §5 keeps trust material off the Margo Management Interface, which raises the operator's practical question: how do many devices receive their roots and trust policy? This is a device-management concern, and the mechanism is left to the device vendor and the operator's existing device-management and PKI tooling — SUP-03 does not prescribe a protocol. Fleet trust-anchor provisioning (getting the anchor onto devices that are never all in the same place) and keeping revocation current across the fleet are the genuinely hard parts; they are named here as the vendor's and operator's responsibility rather than solved by this SUP.
+
 ## 5. Publisher signing material examples
 
 ### 5.1 Directory structure
@@ -329,7 +333,16 @@ acme-corp-signing-material/
    # If existing policy, append the trust policy entry to the trustPolicies array.
    ```
 
-## 6. References
+## 6. Third-party / unsigned artifacts
+
+SUP-03 §2 scopes upstream third-party container images out of the signing *obligation*, but under a `strict` production trust policy an unsigned artifact simply fails verification ("No signatures found = Reject", see §3.2) and blocks deployment. Two practical paths handle this:
+
+1. **Re-publish and re-sign (recommended).** The publisher mirrors the third-party image into its own registry and signs it under its own identity. This is standard supply-chain practice and keeps the whole deployment verifiable under a single trust anchor — the operator's consolidated trust policy covers it with no exception.
+2. **Operator-accepted, auditable exception.** Where re-signing is not feasible, the operator scopes an explicit exception in the trust policy for the specific registry/repository (via `registryScopes`, see §5.2), consciously accepting the risk. This is a deliberate, recorded decision — not a silent gap.
+
+A machine-readable declaration that a deployment *intentionally* contains unsigned artifacts is a larger design question, deferred as an open item (see SUP-03 §7).
+
+## 7. References
 
 - CNCF Notary Project Specifications v1.1.0 — <https://github.com/notaryproject/specifications/tree/v1.1.0>
 - Notation CLI — <https://github.com/notaryproject/notation>
@@ -345,4 +358,4 @@ acme-corp-signing-material/
 
 *This document is informative. All normative requirements are in [SUP-03](sup-03-oci-signature.md).*
 
-*Prepared by Andrii Melashchenko (Belden Inc.), 2026-09-24.*
+*Prepared by Andrii Melashchenko (Belden Inc.), 2026-10-19.*
